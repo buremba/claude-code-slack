@@ -7,13 +7,15 @@ import type {
   JobTemplateData
 } from "../types";
 import { KubernetesError } from "../types";
+import type { SlackTokenManager } from "../slack/token-manager";
+import type { AgentManager } from "../infrastructure/agent-manager";
 
 interface RateLimitEntry {
   count: number;
   windowStart: number;
 }
 
-export class KubernetesJobManager {
+export class KubernetesJobManager implements AgentManager {
   private k8sApi: k8s.BatchV1Api;
   private k8sCoreApi: k8s.CoreV1Api;
   private activeJobs = new Map<string, string>(); // sessionKey -> jobName

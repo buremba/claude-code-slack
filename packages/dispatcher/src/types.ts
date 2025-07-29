@@ -39,9 +39,24 @@ export interface GcsConfig {
   projectId?: string;
 }
 
+export type InfrastructureMode = "kubernetes" | "docker";
+
+export interface DockerConfig {
+  socketPath?: string; // Default: /var/run/docker.sock
+  workspaceVolumeHost?: string; // Host directory for workspace mounting
+  network?: string; // Docker network for containers
+  removeContainers?: boolean; // Auto-remove containers, default true
+  workerImage: string;
+  cpu?: string;
+  memory?: string;
+  timeoutSeconds: number;
+}
+
 export interface DispatcherConfig {
   slack: SlackConfig;
-  kubernetes: KubernetesConfig;
+  infrastructure: InfrastructureMode;
+  kubernetes?: KubernetesConfig;
+  docker?: DockerConfig;
   github: GitHubConfig;
   gcs: GcsConfig;
   claude: Partial<ClaudeExecutionOptions>;

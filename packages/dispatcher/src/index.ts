@@ -3,14 +3,17 @@
 import { App, LogLevel } from "@slack/bolt";
 import { SlackEventHandlers } from "./slack/event-handlers";
 import { KubernetesJobManager } from "./kubernetes/job-manager";
+import { DockerJobManager } from "./docker/job-manager";
 import { GitHubRepositoryManager } from "./github/repository-manager";
 import { setupHealthEndpoints } from "./simple-http";
+import { SlackTokenManager } from "./slack/token-manager";
+import type { AgentManager } from "./infrastructure/agent-manager";
 import type { DispatcherConfig } from "./types";
 
 export class SlackDispatcher {
   private app: App;
   private eventHandlers: SlackEventHandlers;
-  private jobManager: KubernetesJobManager;
+  private jobManager: AgentManager;
   private repoManager: GitHubRepositoryManager;
   private config: DispatcherConfig;
 
@@ -38,8 +41,18 @@ export class SlackDispatcher {
 
     this.app = new App(appConfig);
 
-    // Initialize managers
-    this.jobManager = new KubernetesJobManager(config.kubernetes);
+    // Initialize managers based on infrastructure mode
+    if (config.infrastructure === "docker") {
+      if (!config.docker) {
+        throw new Error("Docker configuration is required when infrastructure mode is 'docker'");
+      }
+      this.jobManager = new DockerJobManager(config.docker, this.tokenManager);
+    } else {
+      if (!config.kubernetes) {
+        throw new Error("Kubernetes configuration is required when infrastructure mode is 'kubernetes'");
+      }
+      this.jobManager = new KubernetesJobManager(config.kubernetes, this.tokenManager);
+    }
     this.repoManager = new GitHubRepositoryManager(config.github);
     this.eventHandlers = new SlackEventHandlers(
       this.app,
@@ -67,8 +80,15 @@ export class SlackDispatcher {
       
       // Log configuration
       console.log("Configuration:");
-      console.log(`- Kubernetes Namespace: ${this.config.kubernetes.namespace}`);
-      console.log(`- Worker Image: ${this.config.kubernetes.workerImage}`);
+      console.log(`- Infrastructure Mode: ${this.config.infrastructure}`);
+      if (this.config.infrastructure === "kubernetes" && this.config.kubernetes) {
+        console.log(`- Kubernetes Namespace: ${this.config.kubernetes.namespace}`);
+        console.log(`- Worker Image: ${this.config.kubernetes.workerImage}`);
+      } else if (this.config.infrastructure === "docker" && this.config.docker) {
+        console.log(`- Docker Socket: ${this.config.docker.socketPath || "/var/run/docker.sock"}`);
+        console.log(`- Worker Image: ${this.config.docker.workerImage}`);
+        console.log(`- Workspace Host Dir: ${this.config.docker.workspaceVolumeHost || "none"}`);
+      }
       console.log(`- GitHub Organization: ${this.config.github.organization}`);
       console.log(`- GCS Bucket: ${this.config.gcs.bucketName}`);
       console.log(`- Session Timeout: ${this.config.sessionTimeoutMinutes} minutes`);
@@ -111,10 +131,19 @@ export class SlackDispatcher {
           socketMode: this.config.slack.socketMode,
           port: this.config.slack.port,
         },
-        kubernetes: {
-          namespace: this.config.kubernetes.namespace,
-          workerImage: this.config.kubernetes.workerImage,
-        },
+        infrastructure: this.config.infrastructure,
+        ...(this.config.infrastructure === "kubernetes" && this.config.kubernetes && {
+          kubernetes: {
+            namespace: this.config.kubernetes.namespace,
+            workerImage: this.config.kubernetes.workerImage,
+          }
+        }),
+        ...(this.config.infrastructure === "docker" && this.config.docker && {
+          docker: {
+            workerImage: this.config.docker.workerImage,
+            socketPath: this.config.docker.socketPath,
+          }
+        }),
       },
     };
   }
@@ -190,6 +219,9 @@ async function main() {
     // Get bot token from environment
     const botToken = process.env.SLACK_BOT_TOKEN;
 
+    // Determine infrastructure mode
+    const infrastructureMode = (process.env.INFRASTRUCTURE_MODE || "kubernetes") as "kubernetes" | "docker";
+    
     // Load configuration from environment
     const config: DispatcherConfig = {
       slack: {
@@ -202,13 +234,28 @@ async function main() {
         allowedUsers: process.env.SLACK_ALLOWED_USERS?.split(","),
         allowedChannels: process.env.SLACK_ALLOWED_CHANNELS?.split(","),
       },
-      kubernetes: {
-        namespace: process.env.KUBERNETES_NAMESPACE || "default",
-        workerImage: process.env.WORKER_IMAGE || "claude-worker:latest",
-        cpu: process.env.WORKER_CPU || "1000m",
-        memory: process.env.WORKER_MEMORY || "2Gi",
-        timeoutSeconds: parseInt(process.env.WORKER_TIMEOUT_SECONDS || "300"),
-      },
+      infrastructure: infrastructureMode,
+      ...(infrastructureMode === "kubernetes" && {
+        kubernetes: {
+          namespace: process.env.KUBERNETES_NAMESPACE || "default",
+          workerImage: process.env.WORKER_IMAGE || "claude-worker:latest",
+          cpu: process.env.WORKER_CPU || "1000m",
+          memory: process.env.WORKER_MEMORY || "2Gi",
+          timeoutSeconds: parseInt(process.env.WORKER_TIMEOUT_SECONDS || "300"),
+        }
+      }),
+      ...(infrastructureMode === "docker" && {
+        docker: {
+          socketPath: process.env.DOCKER_SOCKET_PATH || "/var/run/docker.sock",
+          workspaceVolumeHost: process.env.WORKSPACE_HOST_DIR,
+          network: process.env.DOCKER_NETWORK,
+          removeContainers: process.env.DOCKER_REMOVE_CONTAINERS !== "false",
+          workerImage: process.env.WORKER_IMAGE || "claude-worker:latest",
+          cpu: process.env.WORKER_CPU,
+          memory: process.env.WORKER_MEMORY,
+          timeoutSeconds: parseInt(process.env.WORKER_TIMEOUT_SECONDS || "300"),
+        }
+      }),
       github: {
         token: process.env.GITHUB_TOKEN!,
         organization: process.env.GITHUB_ORGANIZATION || "peerbot-community",
@@ -233,6 +280,14 @@ async function main() {
     }
     if (!config.github.token) {
       throw new Error("GITHUB_TOKEN is required");
+    }
+    
+    // Validate infrastructure-specific configuration
+    if (config.infrastructure === "docker" && !config.docker) {
+      throw new Error("Docker configuration is missing when infrastructure mode is 'docker'");
+    }
+    if (config.infrastructure === "kubernetes" && !config.kubernetes) {
+      throw new Error("Kubernetes configuration is missing when infrastructure mode is 'kubernetes'");
     }
 
     // Create and start dispatcher

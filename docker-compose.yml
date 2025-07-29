@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  dispatcher:
+    build:
+      context: .
+      dockerfile: docker/dispatcher.Dockerfile
+    container_name: claude-dispatcher
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount Docker socket for container management
+      # WARNING: This gives containers full Docker daemon access. Consider using
+      # Docker-in-Docker or rootless Docker for better security in production.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount workspace directory for development
+      # Use dedicated directory instead of /tmp for better security
+      - ./workspaces:/tmp/claude-workspaces
+    environment:
+      # Infrastructure configuration
+      - INFRASTRUCTURE_MODE=docker
+      - DOCKER_SOCKET_PATH=/var/run/docker.sock
+      - WORKSPACE_HOST_DIR=./workspaces
+      - DOCKER_NETWORK=claude-network
+      
+      # Slack configuration (socket mode by default)
+      - SLACK_HTTP_MODE=false
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
+      - SLACK_TRIGGER_PHRASE=${SLACK_TRIGGER_PHRASE:-@claude}
+      
+      # GitHub configuration
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_ORGANIZATION=${GITHUB_ORGANIZATION:-peerbot-community}
+      
+      # Claude configuration
+      - MODEL=${MODEL:-claude-3-5-sonnet-20241022}
+      - TIMEOUT_MINUTES=${TIMEOUT_MINUTES:-5}
+      - ALLOWED_TOOLS=${ALLOWED_TOOLS}
+      
+      # Worker configuration
+      - WORKER_IMAGE=${WORKER_IMAGE:-claude-worker:latest}
+      - WORKER_CPU=${WORKER_CPU:-1000m}
+      - WORKER_MEMORY=${WORKER_MEMORY:-2Gi}
+      - WORKER_TIMEOUT_SECONDS=${WORKER_TIMEOUT_SECONDS:-300}
+      
+      # Storage configuration
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+      
+      # Session configuration
+      - SESSION_TIMEOUT_MINUTES=${SESSION_TIMEOUT_MINUTES:-5}
+      
+      # Development configuration
+      - NODE_ENV=${NODE_ENV:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - claude-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  claude-network:
+    driver: bridge
+
+volumes:
+  claude-workspaces:
+    driver: local

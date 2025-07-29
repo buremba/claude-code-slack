@@ -1,0 +1,37 @@
+version: '3.8'
+
+# Docker Compose override file for development
+# This file is automatically loaded when running `docker compose up`
+# and provides development-specific configurations
+
+services:
+  dispatcher:
+    # Override build context for development
+    build:
+      context: .
+      dockerfile: docker/dispatcher.Dockerfile
+      target: development  # Use development stage if available
+    
+    # Development environment variables
+    environment:
+      - NODE_ENV=development
+      - LOG_LEVEL=DEBUG
+      
+    # Mount source code for hot reload
+    volumes:
+      # Docker socket (required for container management)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Source code mounting for hot reload
+      - ./packages:/app/packages:ro
+      - ./scripts:/app/scripts:ro
+      # Workspace directory for development
+      - ./tmp/workspaces:/tmp/claude-workspaces
+      # Optional: mount your local .env file
+      - ./.env:/app/.env:ro
+      
+    # Override command for development (if needed)
+    # command: ["bun", "run", "dev"]
+    
+    # Enable file watching and auto-restart (if supported by the image)
+    stdin_open: true
+    tty: true

@@ -18,10 +18,12 @@
     "@slack/web-api": "^7.6.0",
     "@kubernetes/client-node": "^1.0.0",
     "@octokit/rest": "^21.1.1",
+    "dockerode": "^4.0.2",
     "node-fetch": "^3.3.2",
     "zod": "^3.24.4"
   },
   "devDependencies": {
+    "@types/dockerode": "^3.3.31",
     "@types/node": "^20.0.0",
     "typescript": "^5.8.3"
   }

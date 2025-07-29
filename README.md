@@ -49,7 +49,31 @@ A powerful [Claude Code](https://claude.ai/code) Slack application that brings A
 
 Choose your deployment approach:
 
-### 🎯 **Option 1: Kubernetes (Recommended)**
+### 🐳 **Option 1: Local Development (Docker Compose)**
+Perfect for development, testing, and small teams
+
+**Benefits:**
+- ✅ Quick setup with one command
+- ✅ Hot reload for development
+- ✅ Full Docker isolation
+- ✅ No Kubernetes required
+- ✅ Easy debugging and testing
+- ❌ Single-node scaling only
+
+**Prerequisites:**
+- Docker and Docker Compose
+- Slack app tokens
+- GitHub personal access token
+
+**Quick Start:**
+```bash
+npm run setup:local    # Setup environment
+npm run dev:local      # Start development server
+```
+
+📖 **[→ Local Development Guide](./docs/local-development.md)**
+
+### 🎯 **Option 2: Kubernetes (Production)**
 Full-featured deployment with per-user isolation and persistence
 
 **Benefits:**
@@ -58,6 +82,7 @@ Full-featured deployment with per-user isolation and persistence
 - ✅ Horizontal scaling for large teams
 - ✅ Enterprise security and monitoring
 - ✅ GCS backup and recovery
+- ✅ Cost optimization and auto-scaling
 
 **Prerequisites:**
 - Google Kubernetes Engine (GKE) cluster
@@ -66,7 +91,7 @@ Full-featured deployment with per-user isolation and persistence
 
 📖 **[→ Kubernetes Deployment Guide](./docs/kubernetes-deployment.md)**
 
-### 🔧 **Option 2: Single Container (Legacy)**
+### 🔧 **Option 3: Single Container (Legacy)**
 Simple deployment for small teams and development
 
 **Benefits:**
@@ -77,6 +102,26 @@ Simple deployment for small teams and development
 - ❌ Limited scaling
 
 📖 **[→ Single Container Setup](#single-container-setup)**
+
+---
+
+## 🚀 Quick Start Comparison
+
+| Feature | Local Docker | Kubernetes | Single Container |
+|---------|-------------|------------|------------------|
+| **Setup Time** | 5 minutes | 30+ minutes | 2 minutes |
+| **Prerequisites** | Docker | K8s cluster | Node.js |
+| **User Isolation** | ✅ | ✅ | ❌ |
+| **Persistence** | ✅ | ✅ | ❌ |
+| **Scalability** | Single node | Unlimited | Single process |
+| **Hot Reload** | ✅ | ❌ | ✅ |
+| **Production Ready** | ❌ | ✅ | ❌ |
+| **Cost** | Free | Variable | Free |
+
+**Recommendation:**
+- **Development**: Use Local Docker
+- **Production**: Use Kubernetes  
+- **Quick Testing**: Use Single Container
 
 ---
 
