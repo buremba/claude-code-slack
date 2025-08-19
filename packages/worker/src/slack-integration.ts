@@ -37,6 +37,12 @@ export class SlackIntegration {
    */
   async updateProgress(content: string): Promise<void> {
     try {
+      // Validate content before updating to prevent empty/meaningless updates
+      if (!this.isValidContent(content)) {
+        logger.info(`Skipping update with invalid content: "${content}"`);
+        return;
+      }
+
       // Rate limiting: don't update more than once every 2 seconds
       const now = Date.now();
       if (now - this.lastUpdateTime < 2000) {
@@ -109,6 +115,12 @@ export class SlackIntegration {
       logger.info(`performUpdate called with content length: ${content.length}`);
       logger.info(`Response channel: ${this.responseChannel}, TS: ${this.responseTs}`);
       
+      // Additional validation at the update level
+      if (!content || content.trim().length === 0) {
+        logger.warn("performUpdate called with empty content, skipping");
+        return;
+      }
+      
       // Convert markdown to Slack format with blocks support
       const slackMessage = markdownToSlackWithBlocks(content);
       
@@ -163,6 +175,7 @@ export class SlackIntegration {
       } else if (error.code === "not_in_channel") {
         logger.error("Bot is not in the channel");
       } else {
+        logger.error("Failed to update Slack message:", error);
         throw new SlackError(
           "updateMessage",
           `Failed to update Slack message: ${error.message}`,
@@ -187,6 +200,24 @@ export class SlackIntegration {
     }
     
     return false;
+  }
+
+  /**
+   * Validate content before updating to ensure meaningful updates
+   */
+  private isValidContent(content: string): boolean {
+    if (!content || typeof content !== 'string') {
+      return false;
+    }
+    
+    // Trim whitespace and check if there's meaningful content
+    const trimmed = content.trim();
+    if (trimmed.length === 0) {
+      return false;
+    }
+    
+    // Allow status messages and meaningful content
+    return true;
   }
 
 

@@ -302,6 +302,12 @@ export class SlackStreamingManager {
     // Flush any pending updates first
     await this.flushUpdateQueue();
 
+    // Validate content before completing execution
+    if (!finalContent || finalContent.trim().length === 0) {
+      console.warn("completeExecution called with empty content, using fallback");
+      finalContent = "✅ Task completed successfully";
+    }
+
     // Send final update
     await this.messageManager.finalizeResponse(
       context.channelId,
@@ -326,6 +332,9 @@ export class SlackStreamingManager {
     messageTs: string,
     error: string,
   ): Promise<void> {
+    console.error("Handling execution error:", error);
+    
+    // Provide clear error feedback
     const errorContent = `❌ **Error occurred during execution:**\n\n${error}`;
     
     await this.messageManager.updateResponse(
@@ -346,8 +355,38 @@ export class SlackStreamingManager {
     }
 
     const lastItem = executionData[executionData.length - 1];
-    return lastItem?.type === "result" || 
-           (lastItem?.type === "assistant" && lastItem?.message?.content?.some((c: any) => c.type === "text"));
+    
+    // Check for explicit completion markers
+    if (lastItem?.type === "result") {
+      return true;
+    }
+    
+    // Check for assistant messages with text content
+    if (lastItem?.type === "assistant" && lastItem?.message?.content?.some((c: any) => c.type === "text")) {
+      return true;
+    }
+    
+    // Also consider tool-only executions as potentially complete
+    // Look for patterns indicating completion without text output
+    const hasToolUsage = executionData.some(item => item.type === "tool_use");
+    const hasAssistantActivity = executionData.some(item => item.type === "assistant");
+    
+    // If we have tool usage or assistant activity but no recent text, 
+    // this might be a tool-only completion that needs special handling
+    if (hasToolUsage || hasAssistantActivity) {
+      // Check if there's been recent activity without text output
+      const recentItems = executionData.slice(-5); // Last 5 items
+      const hasRecentToolUse = recentItems.some(item => item.type === "tool_use");
+      const hasRecentText = recentItems.some(item => 
+        item.type === "assistant" && 
+        item.message?.content?.some((c: any) => c.type === "text")
+      );
+      
+      // If recent tool use but no recent text, this might be complete
+      return hasRecentToolUse && !hasRecentText;
+    }
+    
+    return false;
   }
 
   /**

@@ -145,11 +145,16 @@ function formatToolUse(toolUse: ClaudeMessage): string | null {
  */
 export function extractFinalResponse(rawOutput: string | undefined): string {
   if (!rawOutput || rawOutput.trim() === "") {
+    console.log("[extractFinalResponse] No output provided");
     return "";
   }
 
   const lines = rawOutput.split("\n").filter(line => line.trim() !== "");
   const textMessages: string[] = [];
+  let hasToolUsage = false;
+  let hasAssistantMessages = false;
+
+  console.log(`[extractFinalResponse] Processing ${lines.length} lines`);
 
   // Process lines in reverse to get the most recent text messages
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -158,8 +163,14 @@ export function extractFinalResponse(rawOutput: string | undefined): string {
     try {
       const parsed: ClaudeMessage = JSON.parse(line);
       
+      // Track different types of content
+      if (parsed.type === "tool_use") {
+        hasToolUsage = true;
+      }
+      
       // Extract text content from assistant messages
       if (parsed.type === "assistant" && parsed.message && typeof parsed.message === 'object' && 'content' in parsed.message) {
+        hasAssistantMessages = true;
         // Handle the content array structure
         const content = parsed.message.content;
         if (Array.isArray(content)) {
@@ -177,5 +188,17 @@ export function extractFinalResponse(rawOutput: string | undefined): string {
     }
   }
 
-  return textMessages.join("\n\n");
+  const finalResponse = textMessages.join("\n\n");
+  
+  console.log(`[extractFinalResponse] Found ${textMessages.length} text messages, hasToolUsage: ${hasToolUsage}, hasAssistantMessages: ${hasAssistantMessages}`);
+  console.log(`[extractFinalResponse] Final response length: ${finalResponse.length}`);
+
+  // If we have no text response but there was tool usage or assistant activity, 
+  // provide a meaningful fallback message
+  if (!finalResponse && (hasToolUsage || hasAssistantMessages)) {
+    console.log("[extractFinalResponse] Returning fallback message for tool-only execution");
+    return "✅ Task completed successfully";
+  }
+
+  return finalResponse;
 }

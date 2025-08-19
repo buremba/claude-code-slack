@@ -188,12 +188,17 @@ export async function runClaudeWithProgress(
         // Check if this line is a JSON object
         const parsed = JSON.parse(line);
         
-        // Call progress callback if provided
+        // Call progress callback if provided with enhanced context
         if (onProgress) {
           await onProgress({
             type: "output",
             data: parsed,
             timestamp: Date.now(),
+            context: {
+              hasContent: !!parsed.content,
+              messageType: parsed.type,
+              isToolUse: parsed.type === "tool_use"
+            }
           });
         }
 
@@ -311,12 +316,22 @@ export async function runClaudeWithProgress(
 
       logger.info(`Log saved to ${EXECUTION_FILE}`);
 
-      // Call completion callback
+      // Call completion callback with enhanced context
       if (onProgress) {
         await onProgress({
           type: "completion",
-          data: { success: true, exitCode, executionFile },
+          data: { 
+            success: true, 
+            exitCode, 
+            executionFile,
+            hasOutput: !!output && output.trim().length > 0,
+            outputLength: output.length
+          },
           timestamp: Date.now(),
+          context: {
+            executionComplete: true,
+            outputAvailable: !!output
+          }
         });
       }
     } catch (e) {
@@ -344,12 +359,21 @@ export async function runClaudeWithProgress(
 
     const error = `Claude process exited with code ${exitCode}`;
     
-    // Call error callback
+    // Call error callback with enhanced context
     if (onProgress) {
       await onProgress({
         type: "error",
-        data: { error, exitCode },
+        data: { 
+          error, 
+          exitCode,
+          hasOutput: !!output && output.trim().length > 0,
+          outputLength: output?.length || 0
+        },
         timestamp: Date.now(),
+        context: {
+          executionFailed: true,
+          outputAvailable: !!output
+        }
       });
     }
 

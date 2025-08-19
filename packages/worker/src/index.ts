@@ -249,6 +249,8 @@ export class ClaudeWorker {
           if (!firstOutputLogged && update.type === "output") {
             logger.info(`[TIMING] First Claude output at: ${new Date().toISOString()} (${Date.now() - claudeStartTime}ms after Claude start)`);
             firstOutputLogged = true;
+            // Update progress to show Claude is working
+            await this.slackIntegration.updateProgress("💭 Claude is working...");
           }
           // Stream progress to Slack
           if (update.type === "output" && update.data) {
@@ -286,10 +288,14 @@ export class ClaudeWorker {
         logger.info("Calling slackIntegration.updateProgress...");
         // Update with Claude's response and completion status
         const claudeResponse = this.formatClaudeResponse(result.output);
-        if (claudeResponse) {
+        
+        // Validate that we have meaningful content before updating
+        if (claudeResponse && claudeResponse.trim().length > 0) {
           await this.slackIntegration.updateProgress(claudeResponse);
         } else {
-          await this.slackIntegration.updateProgress("✅ Completed");
+          // Fallback for successful execution without text response
+          logger.info("No meaningful text response found, using fallback message");
+          await this.slackIntegration.updateProgress("✅ Task completed successfully");
         }
         
         // Update reaction to success
