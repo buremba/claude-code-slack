@@ -4,6 +4,22 @@ Thank you for your interest in contributing to Claude Code Action! This document
 
 ## Getting Started
 
+### Development Environment Options
+
+#### Option 1: Devcontainer (Recommended)
+
+The easiest way to get started is using the provided devcontainer with VS Code:
+
+- **Prerequisites**: [VS Code](https://code.visualstudio.com/) with [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) and [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+- **Setup**: Open the project in VS Code and select "Reopen in Container" when prompted
+- **Includes**: All tools pre-installed (Bun, uv, Claude Code CLI, Python, Node.js, Git)
+
+See [.devcontainer/README.md](.devcontainer/README.md) for detailed devcontainer documentation.
+
+#### Option 2: Local Setup
+
+For traditional local development:
+
 ### Prerequisites
 
 - [Bun](https://bun.sh/) runtime
@@ -12,6 +28,10 @@ Thank you for your interest in contributing to Claude Code Action! This document
 - An Anthropic API key (for testing)
 
 ### Setup
+
+**For Devcontainer Users**: Skip these steps and see [.devcontainer/README.md](.devcontainer/README.md).
+
+**For Local Development**:
 
 1. Fork the repository on GitHub and clone your fork:
 
