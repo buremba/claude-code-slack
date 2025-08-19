@@ -350,15 +350,19 @@ export class SlackEventHandlers {
 
     logger.info(`Handling request for session: ${sessionKey}`);
 
-    // Check if session is already active
+    // Check if we should reuse a recent worker (5-minute window)
     const existingSession = this.activeSessions.get(sessionKey);
     if (existingSession && existingSession.status === "running") {
+      // Queue the message instead of blocking
       await client.chat.postMessage({
         channel: context.channelId,
         thread_ts: context.threadTs,
-        text: "⏳ I'm already working on this thread. Please wait for the current task to complete.",
+        text: "📝 Message queued - I'll process this after completing the current task.",
         mrkdwn: true,
       });
+      
+      // Store the queued message for later processing
+      // Note: In stateless approach, the next worker will pick up all conversation history
       return;
     }
 
@@ -421,13 +425,22 @@ export class SlackEventHandlers {
         ts: context.messageTs,
       });
 
-      // Post initial Slack response first (fast operation)
+      // Post initial Slack response with conversation history in metadata
       logger.info(`[TIMING] Posting initial response at: ${new Date().toISOString()}`);
       const initialResponse = await client.chat.postMessage({
         channel: context.channelId,
         thread_ts: threadTs,
         text: "🚀 Starting Claude session...",
         blocks: this.formatInitialResponseBlocks(sessionKey, username, repository.repositoryUrl, undefined, "🚀 Starting Claude session..."),
+        metadata: {
+          event_type: "claude_session",
+          event_payload: {
+            sessionKey,
+            conversationHistory: JSON.stringify(conversationHistory),
+            lastActivity: Date.now(),
+            repositoryUrl: repository.repositoryUrl
+          }
+        }
       });
       
       // Now create the Kubernetes job with the Slack response timestamp
@@ -804,11 +817,12 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
             session.lastActivity = Date.now();
           }
           
-          // Clean up session after delay
+          // Clean up session after 5-minute delay for worker reuse
           setTimeout(() => {
             this.activeSessions.delete(sessionKey);
             this.messageReactions.delete(sessionKey);
-          }, 60000);
+            logger.info(`Session ${sessionKey} cleaned up after 5-minute reuse window`);
+          }, 5 * 60 * 1000); // 5 minutes for worker reuse
           
           return; // Stop monitoring
         }

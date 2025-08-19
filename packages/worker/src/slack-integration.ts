@@ -33,6 +33,28 @@ export class SlackIntegration {
   }
 
   /**
+   * Fetch thread messages from Slack API for stateless worker reuse
+   */
+  async fetchThreadMessages(channelId: string, threadTs: string): Promise<any[]> {
+    try {
+      const result = await this.client.conversations.replies({
+        channel: channelId,
+        ts: threadTs,
+        limit: 100, // Get up to 100 messages in the thread
+      });
+
+      if (!result.messages || result.messages.length === 0) {
+        return [];
+      }
+
+      return result.messages;
+    } catch (error) {
+      logger.error(`Failed to fetch thread messages: ${error}`);
+      throw new SlackError("fetchThreadMessages", `Failed to fetch conversation from thread ${threadTs}`, error as Error);
+    }
+  }
+
+  /**
    * Update progress message in Slack
    */
   async updateProgress(content: string): Promise<void> {

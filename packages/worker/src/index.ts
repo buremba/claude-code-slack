@@ -75,6 +75,35 @@ export class ClaudeWorker {
   }
 
   /**
+   * Fetch conversation history from Slack API (stateless worker reuse)
+   */
+  private async fetchConversationFromSlack(): Promise<Array<{ role: string; content: string; timestamp: number }>> {
+    if (!this.config.threadTs) {
+      return [];
+    }
+
+    try {
+      // Use Slack integration to fetch thread messages
+      const messages = await this.slackIntegration.fetchThreadMessages(this.config.channelId, this.config.threadTs);
+      
+      // Convert to conversation format
+      const conversation = messages
+        .filter((msg: any) => msg.text && msg.user) // Filter out system messages
+        .map((msg: any) => ({
+          role: msg.bot_id ? 'assistant' : 'user',
+          content: msg.text,
+          timestamp: parseFloat(msg.ts) * 1000, // Convert Slack timestamp to milliseconds
+        }));
+
+      logger.info(`Fetched ${conversation.length} messages from Slack thread ${this.config.threadTs}`);
+      return conversation;
+    } catch (error) {
+      logger.error('Failed to fetch conversation from Slack:', error);
+      return [];
+    }
+  }
+
+  /**
    * Check if this is a simple query that doesn't need repository access
    */
   private isSimpleQuery(prompt: string): boolean {
@@ -212,11 +241,9 @@ export class ClaudeWorker {
       // Update progress with simple status
       await this.slackIntegration.updateProgress("🚀 Starting Claude session...");
 
-      // Parse conversation history if provided
-      const conversationHistory = this.config.conversationHistory 
-        ? JSON.parse(this.config.conversationHistory)
-        : [];
-      logger.info(`Loaded ${conversationHistory.length} messages from conversation history`);
+      // Fetch conversation history from Slack API (stateless approach)
+      const conversationHistory = await this.fetchConversationFromSlack();
+      logger.info(`Loaded ${conversationHistory.length} messages from Slack API`);
 
       // Prepare session context with conversation history
       const sessionContext = {

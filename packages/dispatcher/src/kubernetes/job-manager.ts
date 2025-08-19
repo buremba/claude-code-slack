@@ -172,9 +172,9 @@ export class KubernetesJobManager {
   }
 
   /**
-   * Find an existing job for a session by checking Kubernetes labels
+   * Find a recent job for a session within 5-minute reuse window
    */
-  private async findExistingJobForSession(sessionKey: string): Promise<string | null> {
+  private async findRecentJobForSession(sessionKey: string): Promise<string | null> {
     try {
       // Create a safe label value from the session key
       const labelValue = sessionKey.replace(/[^a-z0-9]/gi, "-").toLowerCase();
@@ -185,18 +185,30 @@ export class KubernetesJobManager {
         labelSelector: `session-key=${labelValue}`
       });
       
-      // Find active jobs (not completed or failed)
+      // Find recently completed jobs within 5-minute window for reuse
+      const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+      
       for (const job of jobsResponse.items) {
         const jobName = job.metadata?.name;
         const status = job.status;
+        const annotations = job.metadata?.annotations || {};
         
-        // Check if job is still active (not completed or failed)
-        if (jobName && !status?.succeeded && !status?.failed) {
-          // Also check the annotation to verify it's the exact session
-          const annotations = job.metadata?.annotations || {};
-          if (annotations["claude.ai/session-key"] === sessionKey) {
-            logger.info(`Found existing active job ${jobName} for session ${sessionKey}`);
+        // Check if job matches the exact session
+        if (jobName && annotations["claude.ai/session-key"] === sessionKey) {
+          // If job is still active, reuse it
+          if (!status?.succeeded && !status?.failed) {
+            logger.info(`Found active job for reuse: ${jobName}`);
             return jobName;
+          }
+          
+          // If job completed recently (within 5 minutes), consider for reuse
+          const completionTime = status?.completionTime;
+          if (status?.succeeded && completionTime) {
+            const completedAt = new Date(completionTime).getTime();
+            if (completedAt > fiveMinutesAgo) {
+              logger.info(`Found recent completed job for potential reuse: ${jobName} (completed ${Math.round((Date.now() - completedAt) / 1000)}s ago)`);
+              return jobName;
+            }
           }
         }
       }
@@ -231,11 +243,10 @@ export class KubernetesJobManager {
         return existingJobName;
       }
 
-      // Check if a job already exists in Kubernetes for this session
-      // This handles the case where the dispatcher was restarted
-      const existingJob = await this.findExistingJobForSession(request.sessionKey);
+      // Check if a recent job already exists for this session (within 5-minute reuse window)
+      const existingJob = await this.findRecentJobForSession(request.sessionKey);
       if (existingJob) {
-        logger.info(`Found existing Kubernetes job for session ${request.sessionKey}: ${existingJob}`);
+        logger.info(`Found recent job for worker reuse: ${existingJob} (session ${request.sessionKey})`);
         // Track it in memory for this instance
         this.activeJobs.set(request.sessionKey, existingJob);
         return existingJob;
@@ -413,10 +424,8 @@ export class KubernetesJobManager {
                     name: "CLAUDE_OPTIONS",
                     value: templateData.claudeOptions,
                   },
-                  {
-                    name: "CONVERSATION_HISTORY",
-                    value: templateData.conversationHistory,
-                  },
+                  // Conversation history is now fetched from Slack API instead of env var
+                  // This enables stateless worker reuse without large environment variables
                   // Worker needs Slack token to send progress updates
                   {
                     name: "SLACK_BOT_TOKEN",
