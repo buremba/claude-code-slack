@@ -5,7 +5,8 @@ import { WorkspaceManager } from "./workspace-setup";
 import { SlackIntegration } from "./slack-integration";
 import { SlackTokenManager } from "./slack/token-manager";
 import { extractFinalResponse } from "./claude-output-parser";
-import type { WorkerConfig } from "./types";
+import { WorkerHttpServer } from "./http-server";
+import type { WorkerConfig, WorkerMode, WorkerState, TaskRequest, TaskResponse } from "./types";
 import logger from "./logger";
 
 export class ClaudeWorker {
@@ -15,6 +16,11 @@ export class ClaudeWorker {
   private config: WorkerConfig;
   private tokenManager?: SlackTokenManager;
   private autoPushInterval?: NodeJS.Timeout;
+  
+  // Persistent mode properties
+  private workerState: WorkerState = WorkerState.idle;
+  private timeoutTimer?: NodeJS.Timeout;
+  private httpServer?: WorkerHttpServer;
 
   constructor(config: WorkerConfig) {
     this.config = config;
@@ -100,9 +106,223 @@ export class ClaudeWorker {
   }
 
   /**
+   * Start persistent mode
+   */
+  private async startPersistentMode(): Promise<void> {
+    logger.info(`Starting worker in persistent mode on port ${this.config.httpPort}`);
+    
+    // Create HTTP server
+    this.httpServer = new WorkerHttpServer(
+      this.config.httpPort,
+      this.handleTaskRequest.bind(this),
+      () => this.workerState
+    );
+    
+    // Start HTTP server
+    await this.httpServer.start();
+    
+    // Start idle timeout
+    this.startIdleTimeout();
+    
+    logger.info("Worker is now running in persistent mode");
+  }
+
+  /**
+   * Handle task request from HTTP server
+   */
+  private async handleTaskRequest(taskData: TaskRequest): Promise<TaskResponse> {
+    try {
+      logger.info(`Received task request for session: ${taskData.sessionKey}`);
+      
+      // Update worker state
+      this.workerState = WorkerState.busy;
+      this.resetIdleTimeout();
+      
+      // Update config with new task data
+      this.updateConfigFromTask(taskData);
+      
+      // Execute the task
+      await this.executeTask();
+      
+      // Set state back to idle and reset timeout
+      this.workerState = WorkerState.idle;
+      this.startIdleTimeout();
+      
+      return {
+        success: true,
+        message: "Task completed successfully",
+        taskId: taskData.sessionKey
+      };
+    } catch (error) {
+      logger.error("Error handling task request:", error);
+      this.workerState = WorkerState.idle;
+      this.startIdleTimeout();
+      
+      return {
+        success: false,
+        message: error instanceof Error ? error.message : "Unknown error",
+        taskId: taskData.sessionKey
+      };
+    }
+  }
+
+  /**
+   * Update config from task request
+   */
+  private updateConfigFromTask(taskData: TaskRequest): void {
+    // Store conversation locally instead of using env var
+    const conversationPath = this.getConversationPath(taskData.sessionKey);
+    this.storeConversation(conversationPath, taskData.conversationHistory || []);
+    
+    // Update relevant config fields - note: we don't update userPrompt via env
+    // Instead, we'll pass it directly to the execution
+    this.config.userPrompt = Buffer.from(taskData.userPrompt).toString("base64");
+    this.config.slackResponseChannel = taskData.slackResponseChannel;
+    this.config.slackResponseTs = taskData.slackResponseTs;
+    this.config.channelId = taskData.channelId;
+    this.config.userId = taskData.userId;
+    this.config.username = taskData.username;
+    this.config.threadTs = taskData.threadTs;
+    this.config.repositoryUrl = taskData.repositoryUrl;
+    this.config.claudeOptions = JSON.stringify(taskData.claudeOptions);
+  }
+
+  /**
+   * Get conversation storage path
+   */
+  private getConversationPath(sessionKey: string): string {
+    return `/workspace/.claude/projects/${this.config.userId}/${sessionKey}.jsonl`;
+  }
+
+  /**
+   * Store conversation history to file
+   */
+  private storeConversation(conversationPath: string, history: Array<{ role: string; content: string; timestamp: number }>): void {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      
+      // Ensure directory exists
+      fs.mkdirSync(path.dirname(conversationPath), { recursive: true });
+      
+      // Write conversation history as JSONL
+      const jsonlContent = history.map(msg => JSON.stringify(msg)).join('\n');
+      fs.writeFileSync(conversationPath, jsonlContent);
+      
+      logger.info(`Stored conversation history to ${conversationPath}`);
+    } catch (error) {
+      logger.error("Failed to store conversation history:", error);
+    }
+  }
+
+  /**
+   * Load conversation history from file
+   */
+  private loadConversation(conversationPath: string): Array<{ role: string; content: string; timestamp: number }> {
+    try {
+      const fs = require('fs');
+      
+      if (!fs.existsSync(conversationPath)) {
+        return [];
+      }
+      
+      const content = fs.readFileSync(conversationPath, 'utf8');
+      if (!content.trim()) {
+        return [];
+      }
+      
+      return content.split('\n')
+        .filter(line => line.trim())
+        .map(line => JSON.parse(line));
+    } catch (error) {
+      logger.error("Failed to load conversation history:", error);
+      return [];
+    }
+  }
+
+  /**
+   * Start idle timeout
+   */
+  private startIdleTimeout(): void {
+    this.clearIdleTimeout();
+    
+    const timeoutMs = this.config.timeoutMinutes * 60 * 1000;
+    this.timeoutTimer = setTimeout(() => {
+      logger.info(`Idle timeout reached (${this.config.timeoutMinutes} minutes), shutting down worker`);
+      this.shutdown();
+    }, timeoutMs);
+    
+    logger.info(`Started ${this.config.timeoutMinutes}min idle timeout`);
+  }
+
+  /**
+   * Reset idle timeout
+   */
+  private resetIdleTimeout(): void {
+    this.clearIdleTimeout();
+    this.startIdleTimeout();
+  }
+
+  /**
+   * Clear idle timeout
+   */
+  private clearIdleTimeout(): void {
+    if (this.timeoutTimer) {
+      clearTimeout(this.timeoutTimer);
+      this.timeoutTimer = undefined;
+    }
+  }
+
+  /**
+   * Shutdown worker gracefully
+   */
+  private async shutdown(): Promise<void> {
+    logger.info("Shutting down worker...");
+    this.workerState = WorkerState.shutting_down;
+    
+    // Clear timeout
+    this.clearIdleTimeout();
+    
+    // Stop HTTP server
+    if (this.httpServer) {
+      await this.httpServer.stop();
+    }
+    
+    // Cleanup resources
+    await this.cleanup();
+    
+    // Exit process
+    process.exit(0);
+  }
+
+  /**
+   * Execute task (extracted from execute method)
+   */
+  private async executeTask(): Promise<void> {
+    // Implementation will be the core of the existing execute method
+    // We'll modify execute() to call this method
+    await this.executeTaskInternal();
+  }
+
+  /**
    * Execute the worker job
    */
   async execute(): Promise<void> {
+    // Check if we're in persistent mode
+    if (this.config.mode === WorkerMode.persistent) {
+      await this.startPersistentMode();
+      // In persistent mode, we don't exit - the server keeps running
+      return;
+    }
+    
+    // Original one-shot execution
+    await this.executeTaskInternal();
+  }
+
+  /**
+   * Internal task execution logic
+   */
+  private async executeTaskInternal(): Promise<void> {
     const executeStartTime = Date.now();
     // Get original message timestamp for reactions (defined outside try block)
     const originalMessageTs = process.env.ORIGINAL_MESSAGE_TS;
@@ -212,10 +432,20 @@ export class ClaudeWorker {
       // Update progress with simple status
       await this.slackIntegration.updateProgress("🚀 Starting Claude session...");
 
-      // Parse conversation history if provided
-      const conversationHistory = this.config.conversationHistory 
-        ? JSON.parse(this.config.conversationHistory)
-        : [];
+      // Parse conversation history 
+      let conversationHistory: Array<{ role: string; content: string; timestamp: number }>;
+      
+      if (this.config.mode === WorkerMode.persistent) {
+        // In persistent mode, load from file
+        const conversationPath = this.getConversationPath(this.config.sessionKey);
+        conversationHistory = this.loadConversation(conversationPath);
+      } else {
+        // In one-shot mode, use env var
+        conversationHistory = this.config.conversationHistory 
+          ? JSON.parse(this.config.conversationHistory)
+          : [];
+      }
+      
       logger.info(`Loaded ${conversationHistory.length} messages from conversation history`);
 
       // Prepare session context with conversation history
@@ -459,6 +689,10 @@ async function main() {
     logger.info(`[TIMING] Worker process started at: ${new Date(workerStartTime).toISOString()}`);
 
     // Load configuration from environment
+    const workerMode = (process.env.WORKER_MODE as WorkerMode) || WorkerMode.oneshot;
+    const timeoutMinutes = parseInt(process.env.WORKER_TIMEOUT_MINUTES || "5");
+    const httpPort = parseInt(process.env.WORKER_HTTP_PORT || "8080");
+    
     const config: WorkerConfig = {
       sessionKey: process.env.SESSION_KEY!,
       userId: process.env.USER_ID!,
@@ -466,11 +700,14 @@ async function main() {
       channelId: process.env.CHANNEL_ID!,
       threadTs: process.env.THREAD_TS || undefined,
       repositoryUrl: process.env.REPOSITORY_URL!,
-      userPrompt: process.env.USER_PROMPT!, // Base64 encoded
+      userPrompt: process.env.USER_PROMPT || "", // May be empty in persistent mode
       slackResponseChannel: process.env.SLACK_RESPONSE_CHANNEL!,
       slackResponseTs: process.env.SLACK_RESPONSE_TS!,
       claudeOptions: process.env.CLAUDE_OPTIONS!,
       conversationHistory: process.env.CONVERSATION_HISTORY,
+      mode: workerMode,
+      timeoutMinutes: timeoutMinutes,
+      httpPort: httpPort,
       slack: {
         token: process.env.SLACK_BOT_TOKEN!,
         refreshToken: process.env.SLACK_REFRESH_TOKEN,
@@ -484,12 +721,17 @@ async function main() {
     };
 
     // Validate required configuration
-    const required = [
+    let required = [
       "SESSION_KEY", "USER_ID", "USERNAME", "CHANNEL_ID", 
-      "REPOSITORY_URL", "USER_PROMPT", "SLACK_RESPONSE_CHANNEL", 
+      "REPOSITORY_URL", "SLACK_RESPONSE_CHANNEL", 
       "SLACK_RESPONSE_TS", "CLAUDE_OPTIONS", "SLACK_BOT_TOKEN",
       "GITHUB_TOKEN"
     ];
+    
+    // In one-shot mode, USER_PROMPT is required
+    if (workerMode === WorkerMode.oneshot) {
+      required.push("USER_PROMPT");
+    }
 
     const missingVars: string[] = [];
     for (const key of required) {

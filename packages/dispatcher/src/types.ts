@@ -19,6 +19,12 @@ export interface SlackConfig {
   allowPrivateChannels?: boolean;
 }
 
+export interface WorkerReusabilityConfig {
+  timeoutMinutes: number;
+  maxConcurrentWorkers: number;
+  httpPort: number;
+}
+
 export interface KubernetesConfig {
   namespace: string;
   workerImage: string;
@@ -26,6 +32,7 @@ export interface KubernetesConfig {
   memory: string;
   timeoutSeconds: number;
   kubeconfig?: string;
+  workerReusabilityConfig: WorkerReusabilityConfig;
 }
 
 export interface GitHubConfig {
@@ -80,6 +87,8 @@ export interface ThreadSession {
   lastActivity: number;
   status: "pending" | "starting" | "running" | "completed" | "error" | "timeout";
   createdAt: number;
+  workerPodName?: string;
+  workerEndpoint?: string;
 }
 
 export interface UserRepository {
@@ -149,4 +158,35 @@ export class GitHubRepositoryError extends Error {
     super(message);
     this.name = "GitHubRepositoryError";
   }
+}
+
+// Worker reuse types
+export enum WorkerStatus {
+  idle = "idle",
+  busy = "busy",
+  timeout = "timeout"
+}
+
+export interface WorkerInfo {
+  sessionKey: string;
+  podName: string;
+  status: WorkerStatus;
+  lastActivity: number;
+  createdAt: number;
+  endpoint: string;
+}
+
+export interface TaskSubmissionRequest {
+  sessionKey: string;
+  userId: string;
+  username: string;
+  channelId: string;
+  threadTs?: string;
+  userPrompt: string;
+  repositoryUrl: string;
+  slackResponseChannel: string;
+  slackResponseTs: string;
+  originalMessageTs?: string;
+  claudeOptions: ClaudeExecutionOptions;
+  conversationHistory?: Array<{ role: string; content: string; timestamp: number }>;
 }

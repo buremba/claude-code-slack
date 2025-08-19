@@ -1,11 +1,15 @@
 #!/usr/bin/env bun
 
 import * as k8s from "@kubernetes/client-node";
+import fetch from "node-fetch";
 import logger from "../logger";
 import type { 
   KubernetesConfig,
   WorkerJobRequest,
-  JobTemplateData
+  JobTemplateData,
+  WorkerInfo,
+  WorkerStatus,
+  TaskSubmissionRequest
 } from "../types";
 import { KubernetesError } from "../types";
 
@@ -17,7 +21,10 @@ interface RateLimitEntry {
 export class KubernetesJobManager {
   private k8sApi: k8s.BatchV1Api;
   private k8sCoreApi: k8s.CoreV1Api;
+  private k8sAppsApi: k8s.AppsV1Api;
   private activeJobs = new Map<string, string>(); // sessionKey -> jobName
+  private activeWorkers = new Map<string, WorkerInfo>(); // sessionKey -> WorkerInfo for persistent workers
+  private workerTimeouts = new Map<string, NodeJS.Timeout>(); // sessionKey -> timeout timer
   private rateLimitMap = new Map<string, RateLimitEntry>(); // userId -> rate limit data
   private config: KubernetesConfig;
   
@@ -76,6 +83,7 @@ export class KubernetesJobManager {
     
     this.k8sApi = kc.makeApiClient(k8s.BatchV1Api);
     this.k8sCoreApi = kc.makeApiClient(k8s.CoreV1Api);
+    this.k8sAppsApi = kc.makeApiClient(k8s.AppsV1Api);
     
     // Start cleanup timer for rate limit entries
     this.startRateLimitCleanup();
@@ -209,6 +217,155 @@ export class KubernetesJobManager {
   }
 
   /**
+   * Find an available worker for the session key
+   */
+  private findAvailableWorker(sessionKey: string): WorkerInfo | null {
+    const worker = this.activeWorkers.get(sessionKey);
+    if (worker && worker.status === WorkerStatus.idle) {
+      return worker;
+    }
+    return null;
+  }
+
+  /**
+   * Submit a task to an existing worker
+   */
+  private async submitTaskToWorker(workerInfo: WorkerInfo, taskRequest: TaskSubmissionRequest): Promise<boolean> {
+    try {
+      const response = await fetch(`${workerInfo.endpoint}/task`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(taskRequest),
+        timeout: 5000 // 5 second timeout
+      });
+
+      if (response.ok) {
+        // Update worker status and reset timeout
+        workerInfo.status = WorkerStatus.busy;
+        workerInfo.lastActivity = Date.now();
+        this.resetWorkerTimeout(workerInfo.sessionKey);
+        logger.info(`Successfully submitted task to worker ${workerInfo.podName}`);
+        return true;
+      } else {
+        logger.warn(`Failed to submit task to worker ${workerInfo.podName}: ${response.status}`);
+        return false;
+      }
+    } catch (error) {
+      logger.error(`Error submitting task to worker ${workerInfo.podName}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Create a persistent worker deployment
+   */
+  private async createPersistentWorker(request: WorkerJobRequest): Promise<string> {
+    const deploymentName = this.generateDeploymentName(request.sessionKey);
+    
+    try {
+      // Create deployment manifest
+      const deploymentManifest = this.createDeploymentManifest(deploymentName, request);
+
+      // Create the deployment
+      await this.k8sAppsApi.createNamespacedDeployment({
+        namespace: this.config.namespace,
+        body: deploymentManifest
+      });
+      
+      // Wait for deployment to be ready and get endpoint
+      const endpoint = await this.waitForDeploymentReady(deploymentName);
+      
+      // Track the worker
+      const workerInfo: WorkerInfo = {
+        sessionKey: request.sessionKey,
+        podName: deploymentName,
+        status: WorkerStatus.busy,
+        lastActivity: Date.now(),
+        createdAt: Date.now(),
+        endpoint: endpoint
+      };
+      
+      this.activeWorkers.set(request.sessionKey, workerInfo);
+      this.startWorkerTimeout(request.sessionKey);
+      
+      logger.info(`Created persistent worker deployment: ${deploymentName} for session ${request.sessionKey}`);
+      
+      return deploymentName;
+
+    } catch (error) {
+      throw new KubernetesError(
+        "createPersistentWorker",
+        `Failed to create persistent worker for session ${request.sessionKey}`,
+        error as Error
+      );
+    }
+  }
+
+  /**
+   * Start worker timeout
+   */
+  private startWorkerTimeout(sessionKey: string): void {
+    // Clear existing timeout if any
+    this.clearWorkerTimeout(sessionKey);
+    
+    const timeoutMs = this.config.workerReusabilityConfig.timeoutMinutes * 60 * 1000;
+    const timeout = setTimeout(() => {
+      this.cleanupWorker(sessionKey);
+    }, timeoutMs);
+    
+    this.workerTimeouts.set(sessionKey, timeout);
+    logger.info(`Started ${this.config.workerReusabilityConfig.timeoutMinutes}min timeout for worker ${sessionKey}`);
+  }
+
+  /**
+   * Reset worker timeout
+   */
+  private resetWorkerTimeout(sessionKey: string): void {
+    this.clearWorkerTimeout(sessionKey);
+    this.startWorkerTimeout(sessionKey);
+    logger.info(`Reset timeout for worker ${sessionKey}`);
+  }
+
+  /**
+   * Clear worker timeout
+   */
+  private clearWorkerTimeout(sessionKey: string): void {
+    const timeout = this.workerTimeouts.get(sessionKey);
+    if (timeout) {
+      clearTimeout(timeout);
+      this.workerTimeouts.delete(sessionKey);
+    }
+  }
+
+  /**
+   * Cleanup worker
+   */
+  private async cleanupWorker(sessionKey: string): Promise<void> {
+    try {
+      const worker = this.activeWorkers.get(sessionKey);
+      if (worker) {
+        // Delete the deployment
+        await this.k8sAppsApi.deleteNamespacedDeployment({
+          name: worker.podName,
+          namespace: this.config.namespace
+        });
+        
+        // Clear timeout
+        this.clearWorkerTimeout(sessionKey);
+        
+        // Remove from tracking
+        this.activeWorkers.delete(sessionKey);
+        
+        logger.info(`Cleaned up worker ${worker.podName} for session ${sessionKey}`);
+      }
+    } catch (error) {
+      logger.error(`Error cleaning up worker for session ${sessionKey}:`, error);
+    }
+  }
+
+  /**
    * Create a worker job for the user request
    */
   async createWorkerJob(request: WorkerJobRequest): Promise<string> {
@@ -221,6 +378,51 @@ export class KubernetesJobManager {
       );
     }
 
+    // Check for available worker first (worker reuse)
+    const availableWorker = this.findAvailableWorker(request.sessionKey);
+    if (availableWorker) {
+      logger.info(`Found available worker for session ${request.sessionKey}: ${availableWorker.podName}`);
+      
+      // Submit task to existing worker
+      const taskRequest: TaskSubmissionRequest = {
+        sessionKey: request.sessionKey,
+        userId: request.userId,
+        username: request.username,
+        channelId: request.channelId,
+        threadTs: request.threadTs,
+        userPrompt: request.userPrompt,
+        repositoryUrl: request.repositoryUrl,
+        slackResponseChannel: request.slackResponseChannel,
+        slackResponseTs: request.slackResponseTs,
+        originalMessageTs: request.originalMessageTs,
+        claudeOptions: request.claudeOptions,
+        conversationHistory: request.conversationHistory
+      };
+      
+      const submitted = await this.submitTaskToWorker(availableWorker, taskRequest);
+      if (submitted) {
+        return availableWorker.podName;
+      } else {
+        // If submission failed, cleanup the worker and create a new one
+        await this.cleanupWorker(request.sessionKey);
+      }
+    }
+
+    // Check if we're under the concurrent worker limit
+    if (this.activeWorkers.size >= this.config.workerReusabilityConfig.maxConcurrentWorkers) {
+      logger.info(`Maximum concurrent workers reached (${this.config.workerReusabilityConfig.maxConcurrentWorkers}), creating one-shot job`);
+      // Fall back to creating a regular job
+      return this.createRegularJob(request);
+    }
+
+    // Create new persistent worker
+    return this.createPersistentWorker(request);
+  }
+
+  /**
+   * Create a regular one-shot job (fallback)
+   */
+  private async createRegularJob(request: WorkerJobRequest): Promise<string> {
     const jobName = this.generateJobName(request.sessionKey);
     
     try {
@@ -262,11 +464,21 @@ export class KubernetesJobManager {
 
     } catch (error) {
       throw new KubernetesError(
-        "createWorkerJob",
+        "createRegularJob",
         `Failed to create job for session ${request.sessionKey}`,
         error as Error
       );
     }
+  }
+
+  /**
+   * Generate unique deployment name for persistent workers
+   */
+  private generateDeploymentName(sessionKey: string): string {
+    // Use the session key directly for persistent workers
+    // Replace dots with dashes for Kubernetes naming conventions
+    const safeSessionKey = sessionKey.replace(/\./g, "-").toLowerCase();
+    return `claude-worker-persistent-${safeSessionKey}`;
   }
 
   /**
@@ -282,6 +494,260 @@ export class KubernetesJobManager {
     const timestamp = Date.now().toString(36).slice(-4);
     
     return `claude-worker-${safeSessionKey}-${timestamp}`;
+  }
+
+  /**
+   * Create Kubernetes Deployment manifest for persistent workers
+   */
+  private createDeploymentManifest(deploymentName: string, request: WorkerJobRequest): k8s.V1Deployment {
+    const templateData: JobTemplateData = {
+      jobName: deploymentName,
+      namespace: this.config.namespace,
+      workerImage: this.config.workerImage,
+      cpu: this.config.cpu,
+      memory: this.config.memory,
+      timeoutSeconds: this.config.timeoutSeconds,
+      sessionKey: request.sessionKey,
+      userId: request.userId,
+      username: request.username,
+      channelId: request.channelId,
+      threadTs: request.threadTs || "",
+      repositoryUrl: request.repositoryUrl,
+      userPrompt: Buffer.from(request.userPrompt).toString("base64"),
+      slackResponseChannel: request.slackResponseChannel,
+      slackResponseTs: request.slackResponseTs,
+      originalMessageTs: request.originalMessageTs,
+      claudeOptions: JSON.stringify(request.claudeOptions),
+      conversationHistory: JSON.stringify(request.conversationHistory || []),
+      slackToken: "",
+      githubToken: "",
+    };
+
+    return {
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: {
+        name: deploymentName,
+        namespace: this.config.namespace,
+        labels: {
+          app: "claude-worker-persistent",
+          "session-key": request.sessionKey.replace(/[^a-z0-9]/gi, "-").toLowerCase(),
+          "user-id": request.userId,
+          component: "worker",
+        },
+        annotations: {
+          "claude.ai/session-key": request.sessionKey,
+          "claude.ai/user-id": request.userId,
+          "claude.ai/username": request.username,
+          "claude.ai/created-at": new Date().toISOString(),
+        },
+      },
+      spec: {
+        replicas: 1,
+        selector: {
+          matchLabels: {
+            app: "claude-worker-persistent",
+            "session-key": request.sessionKey.replace(/[^a-z0-9]/gi, "-").toLowerCase(),
+          },
+        },
+        template: {
+          metadata: {
+            labels: {
+              app: "claude-worker-persistent",
+              "session-key": request.sessionKey.replace(/[^a-z0-9]/gi, "-").toLowerCase(),
+              component: "worker",
+            },
+          },
+          spec: {
+            restartPolicy: "Always",
+            tolerations: [
+              {
+                key: "cloud.google.com/gke-spot",
+                operator: "Equal",
+                value: "true",
+                effect: "NoSchedule",
+              },
+            ],
+            containers: [
+              {
+                name: "claude-worker",
+                image: this.config.workerImage,
+                imagePullPolicy: process.env.NODE_ENV === 'production' ? "Always" : "IfNotPresent",
+                ports: [
+                  {
+                    containerPort: this.config.workerReusabilityConfig.httpPort,
+                    name: "http",
+                  },
+                ],
+                resources: {
+                  requests: {
+                    cpu: this.config.cpu,
+                    memory: this.config.memory,
+                  },
+                  limits: {
+                    cpu: this.config.cpu,
+                    memory: this.config.memory,
+                  },
+                },
+                env: [
+                  {
+                    name: "SESSION_KEY",
+                    value: templateData.sessionKey,
+                  },
+                  {
+                    name: "USER_ID",
+                    value: templateData.userId,
+                  },
+                  {
+                    name: "USERNAME",
+                    value: templateData.username,
+                  },
+                  {
+                    name: "CHANNEL_ID",
+                    value: templateData.channelId,
+                  },
+                  {
+                    name: "THREAD_TS",
+                    value: templateData.threadTs,
+                  },
+                  {
+                    name: "REPOSITORY_URL",
+                    value: templateData.repositoryUrl,
+                  },
+                  {
+                    name: "WORKER_MODE",
+                    value: "persistent",
+                  },
+                  {
+                    name: "WORKER_TIMEOUT_MINUTES",
+                    value: this.config.workerReusabilityConfig.timeoutMinutes.toString(),
+                  },
+                  {
+                    name: "WORKER_HTTP_PORT",
+                    value: this.config.workerReusabilityConfig.httpPort.toString(),
+                  },
+                  {
+                    name: "SLACK_BOT_TOKEN",
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: "peerbot-secrets",
+                        key: "slack-bot-token",
+                      },
+                    },
+                  },
+                  {
+                    name: "GITHUB_TOKEN",
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: "peerbot-secrets",
+                        key: "github-token",
+                      },
+                    },
+                  },
+                  {
+                    name: "CLAUDE_CODE_OAUTH_TOKEN",
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: "peerbot-secrets",
+                        key: "claude-code-oauth-token",
+                      },
+                    },
+                  },
+                  {
+                    name: "CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS",
+                    value: "1",
+                  },
+                ],
+                volumeMounts: [
+                  {
+                    name: "workspace",
+                    mountPath: "/workspace",
+                  },
+                ],
+                livenessProbe: {
+                  httpGet: {
+                    path: "/health",
+                    port: this.config.workerReusabilityConfig.httpPort,
+                  },
+                  initialDelaySeconds: 30,
+                  periodSeconds: 10,
+                },
+                readinessProbe: {
+                  httpGet: {
+                    path: "/health",
+                    port: this.config.workerReusabilityConfig.httpPort,
+                  },
+                  initialDelaySeconds: 10,
+                  periodSeconds: 5,
+                },
+                workingDir: "/app/packages/worker",
+                command: ["bun", "run", "dist/index.js"],
+              },
+            ],
+            volumes: [
+              {
+                name: "workspace",
+                emptyDir: {
+                  sizeLimit: "10Gi",
+                },
+              },
+            ],
+            serviceAccountName: "peerbot",
+          },
+        },
+      },
+    };
+  }
+
+  /**
+   * Wait for deployment to be ready and return endpoint
+   */
+  private async waitForDeploymentReady(deploymentName: string): Promise<string> {
+    const maxAttempts = 30; // Wait up to 5 minutes
+    let attempts = 0;
+
+    while (attempts < maxAttempts) {
+      try {
+        attempts++;
+        
+        // Check deployment status
+        const deploymentResponse = await this.k8sAppsApi.readNamespacedDeployment({
+          name: deploymentName,
+          namespace: this.config.namespace
+        });
+        
+        const deployment = deploymentResponse.body;
+        const status = deployment.status;
+        
+        if (status?.readyReplicas && status.readyReplicas > 0) {
+          // Get pod IP
+          const podsResponse = await this.k8sCoreApi.listNamespacedPod({
+            namespace: this.config.namespace,
+            labelSelector: `app=claude-worker-persistent,session-key=${deploymentName.split('-').slice(-1)[0]}`
+          });
+          
+          if (podsResponse.body.items && podsResponse.body.items.length > 0) {
+            const pod = podsResponse.body.items[0];
+            const podIP = pod.status?.podIP;
+            
+            if (podIP) {
+              const endpoint = `http://${podIP}:${this.config.workerReusabilityConfig.httpPort}`;
+              logger.info(`Deployment ${deploymentName} is ready with endpoint: ${endpoint}`);
+              return endpoint;
+            }
+          }
+        }
+        
+        // Wait before retrying
+        await new Promise(resolve => setTimeout(resolve, 10000)); // 10 seconds
+        
+      } catch (error) {
+        logger.error(`Error waiting for deployment ${deploymentName}:`, error);
+        throw error;
+      }
+    }
+    
+    throw new Error(`Deployment ${deploymentName} failed to become ready within timeout`);
   }
 
   /**
@@ -394,10 +860,6 @@ export class KubernetesJobManager {
                     value: templateData.repositoryUrl,
                   },
                   {
-                    name: "USER_PROMPT",
-                    value: templateData.userPrompt,
-                  },
-                  {
                     name: "SLACK_RESPONSE_CHANNEL",
                     value: templateData.slackResponseChannel,
                   },
@@ -412,6 +874,10 @@ export class KubernetesJobManager {
                   {
                     name: "CLAUDE_OPTIONS",
                     value: templateData.claudeOptions,
+                  },
+                  {
+                    name: "USER_PROMPT",
+                    value: templateData.userPrompt,
                   },
                   {
                     name: "CONVERSATION_HISTORY",
@@ -662,20 +1128,36 @@ export class KubernetesJobManager {
   }
 
   /**
-   * Cleanup all jobs
+   * Cleanup all jobs and workers
    */
   async cleanup(): Promise<void> {
-    logger.info(`Cleaning up ${this.activeJobs.size} active jobs...`);
+    logger.info(`Cleaning up ${this.activeJobs.size} active jobs and ${this.activeWorkers.size} active workers...`);
     
-    const promises = Array.from(this.activeJobs.values()).map(jobName =>
+    // Cleanup regular jobs
+    const jobPromises = Array.from(this.activeJobs.values()).map(jobName =>
       this.deleteJob(jobName).catch(error => 
         logger.error(`Failed to delete job ${jobName}:`, error)
       )
     );
     
-    await Promise.allSettled(promises);
-    this.activeJobs.clear();
+    // Cleanup persistent workers
+    const workerPromises = Array.from(this.activeWorkers.keys()).map(sessionKey =>
+      this.cleanupWorker(sessionKey).catch(error => 
+        logger.error(`Failed to cleanup worker for session ${sessionKey}:`, error)
+      )
+    );
     
-    logger.info("Job cleanup completed");
+    await Promise.allSettled([...jobPromises, ...workerPromises]);
+    
+    this.activeJobs.clear();
+    this.activeWorkers.clear();
+    
+    // Clear all timeouts
+    for (const timeout of this.workerTimeouts.values()) {
+      clearTimeout(timeout);
+    }
+    this.workerTimeouts.clear();
+    
+    logger.info("Job and worker cleanup completed");
   }
 }

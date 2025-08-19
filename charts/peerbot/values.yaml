@@ -78,6 +78,13 @@ worker:
   # Workspace configuration
   workspace:
     sizeLimit: 10Gi
+  
+  # Worker reuse configuration
+  reuse:
+    enabled: true
+    timeoutMinutes: 5  # Worker idle timeout
+    maxConcurrentWorkers: 10  # Maximum number of concurrent persistent workers
+    httpPort: 8080  # HTTP port for task submission
 
 # Slack configuration
 slack:

@@ -2,6 +2,17 @@
 
 import type { SlackTokenManager } from "./slack/token-manager";
 
+export enum WorkerMode {
+  oneshot = "oneshot",
+  persistent = "persistent"
+}
+
+export enum WorkerState {
+  idle = "idle",
+  busy = "busy",
+  shutting_down = "shutting_down"
+}
+
 export interface WorkerConfig {
   sessionKey: string;
   userId: string;
@@ -14,6 +25,9 @@ export interface WorkerConfig {
   slackResponseTs: string;
   claudeOptions: string; // JSON string
   conversationHistory?: string; // JSON string
+  mode: WorkerMode;
+  timeoutMinutes: number;
+  httpPort: number;
   slack: {
     token: string;
     refreshToken?: string;
@@ -85,4 +99,26 @@ export class SlackError extends Error {
     super(message);
     this.name = "SlackError";
   }
+}
+
+// Task request and response types for HTTP communication
+export interface TaskRequest {
+  sessionKey: string;
+  userId: string;
+  username: string;
+  channelId: string;
+  threadTs?: string;
+  userPrompt: string;
+  repositoryUrl: string;
+  slackResponseChannel: string;
+  slackResponseTs: string;
+  originalMessageTs?: string;
+  claudeOptions: any;
+  conversationHistory?: Array<{ role: string; content: string; timestamp: number }>;
+}
+
+export interface TaskResponse {
+  success: boolean;
+  message: string;
+  taskId?: string;
 }

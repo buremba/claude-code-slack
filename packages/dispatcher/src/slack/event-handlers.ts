@@ -411,6 +411,8 @@ export class SlackEventHandlers {
         lastActivity: Date.now(),
         status: "pending",
         createdAt: Date.now(),
+        workerPodName: undefined,
+        workerEndpoint: undefined,
       };
 
       this.activeSessions.set(sessionKey, threadSession);
@@ -458,6 +460,10 @@ export class SlackEventHandlers {
       // Update session with job info
       threadSession.jobName = jobName;
       threadSession.status = "starting";
+      
+      // If this is a persistent worker, the jobName is actually the deployment name
+      // We'll track this for future worker reuse attempts
+      logger.info(`Created job/worker: ${jobName} for session ${sessionKey}`);
       
       // Start monitoring job for status updates
       this.monitorJobStatus(sessionKey, jobName, context.channelId, context.messageTs, client);

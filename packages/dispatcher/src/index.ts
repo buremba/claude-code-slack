@@ -329,6 +329,11 @@ async function main() {
         cpu: process.env.WORKER_CPU || "1000m",
         memory: process.env.WORKER_MEMORY || "2Gi",
         timeoutSeconds: parseInt(process.env.WORKER_TIMEOUT_SECONDS || "300"),
+        workerReusabilityConfig: {
+          timeoutMinutes: parseInt(process.env.WORKER_REUSE_TIMEOUT_MINUTES || "5"),
+          maxConcurrentWorkers: parseInt(process.env.WORKER_REUSE_MAX_CONCURRENT || "10"),
+          httpPort: parseInt(process.env.WORKER_HTTP_PORT || "8080"),
+        },
       },
       github: {
         token: process.env.GITHUB_TOKEN!,
