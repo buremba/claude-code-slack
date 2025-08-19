@@ -332,7 +332,7 @@ async function main() {
       },
       github: {
         token: process.env.GITHUB_TOKEN!,
-        organization: process.env.GITHUB_ORGANIZATION || "peerbot-community",
+        organization: process.env.GITHUB_ORGANIZATION || "", // Empty string means use authenticated user
       },
       claude: {
         allowedTools: process.env.ALLOWED_TOOLS,

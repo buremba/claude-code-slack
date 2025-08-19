@@ -468,7 +468,7 @@ export class KubernetesJobManager {
                 },
               },
             ],
-            serviceAccountName: "peerbot",
+            serviceAccountName: "claude-worker",
           },
         },
       },

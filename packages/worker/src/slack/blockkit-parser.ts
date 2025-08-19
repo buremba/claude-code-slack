@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { marked, MarkedExtension } from "marked";
+import { marked, MarkedExtension, Marked } from "marked";
 import logger from "../logger";
 
 interface BlockMetadata {
@@ -153,6 +153,7 @@ function generateActionButton(
 class BlockKitRenderer {
   private parsedBlocks: ParsedBlock[] = [];
   private baseRenderer: MarkedExtension["renderer"];
+  private markedInstance?: Marked;
 
   constructor() {
     this.baseRenderer = {
@@ -205,12 +206,15 @@ class BlockKitRenderer {
       list: function(token) {
         const items = token.ordered
           ? token.items.map(
-              (item, i) =>
-                `${Number(token.start) + i}. ${this.parser.parse(item.tokens)}`,
+              (item, i) => {
+                const parsed = this.parser.parseInline(item.tokens);
+                return `${Number(token.start) + i}. ${parsed}`;
+              }
             )
           : token.items.map((item) => {
               const marker = item.task ? (item.checked ? "☒" : "☐") : "-";
-              return `${marker} ${this.parser.parse(item.tokens)}`;
+              const parsed = this.parser.parseInline(item.tokens);
+              return `${marker} ${parsed}`;
             });
 
         const firstItem = token.items[0]?.raw;
@@ -269,12 +273,16 @@ class BlockKitRenderer {
       image: () => "",
       
       text: (token) => {
-        return (
-          token.text
-            .replaceAll("&", "&amp;")
-            .replaceAll("<", "&lt;")
-            .replaceAll(">", "&gt;")
-        );
+        let text = token.text
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+          
+        // Manually convert **bold** to *bold* and __bold__ to *bold*
+        text = text.replace(/\*\*(.*?)\*\*/g, '*$1*');
+        text = text.replace(/__(.*?)__/g, '*$1*');
+        
+        return text;
       },
       
       // #endregion
@@ -296,6 +304,10 @@ class BlockKitRenderer {
       logger.error('Content attempted:', content.substring(0, 200));
       return undefined;
     }
+  }
+
+  setMarkedInstance(instance: Marked): void {
+    this.markedInstance = instance;
   }
 
   getRenderer(): MarkedExtension["renderer"] {
@@ -326,9 +338,14 @@ function cleanUrl(href: string) {
 export function markdownToSlackWithBlocks(markdown: string): SlackMessage {
   const renderer = new BlockKitRenderer();
   
-  marked.use({ renderer: renderer.getRenderer() });
+  // Create a new marked instance to avoid conflicts with global configuration
+  const markedInstance = new Marked();
+  markedInstance.use({ renderer: renderer.getRenderer() });
   
-  const text = marked
+  // Pass the marked instance back to the renderer so it can use it for recursive parsing
+  renderer.setMarkedInstance(markedInstance);
+  
+  const text = markedInstance
     .parse(markdown, {
       async: false,
       gfm: true,
@@ -396,9 +413,12 @@ export function markdownToSlackWithBlocks(markdown: string): SlackMessage {
  */
 export function extractActionableBlocks(markdown: string): ParsedBlock[] {
   const renderer = new BlockKitRenderer();
-  marked.use({ renderer: renderer.getRenderer() });
   
-  marked.parse(markdown, {
+  // Create a new marked instance to avoid conflicts with global configuration
+  const markedInstance = new Marked();
+  markedInstance.use({ renderer: renderer.getRenderer() });
+  
+  markedInstance.parse(markdown, {
     async: false,
     gfm: true,
   });

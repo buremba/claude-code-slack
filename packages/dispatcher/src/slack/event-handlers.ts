@@ -153,6 +153,13 @@ export class SlackEventHandlers {
       try {
         const userId = body.user.id;
         const metadata = view.private_metadata ? JSON.parse(view.private_metadata) : {};
+        
+        // Handle repository override modal specifically
+        if (view.callback_id === 'repository_override_modal') {
+          await this.handleRepositoryOverrideSubmission(userId, view, client);
+          return;
+        }
+        
         const channelId = metadata.channel_id;
         const threadTs = metadata.thread_ts;
         
@@ -162,13 +169,39 @@ export class SlackEventHandlers {
         logger.info(`Processing view submission from user ${userId}`);
         logger.info(`User input: ${userInput}`);
         
-        // Post the user's input as a message in the thread
+        // Post the user's input as a message in the thread with blockquote indication
         if (channelId && threadTs) {
-          await client.chat.postMessage({
+          // Get the button text from metadata if available
+          const buttonText = metadata.button_text || 
+                            (metadata.action_id ? metadata.action_id.replace(/_/g, ' ') : null) || 
+                            view.callback_id?.replace(/_/g, ' ') || 
+                            'Form';
+          
+          // Format the message with blockquote indication and context format
+          const formattedInput = `> 📝 *Form submitted from "${buttonText}" button*\n\n${userInput}`;
+          
+          const inputMessage = await client.chat.postMessage({
             channel: channelId,
             thread_ts: threadTs,
-            text: userInput,
-            user: userId
+            text: formattedInput,
+            blocks: [
+              {
+                type: "context",
+                elements: [
+                  {
+                    type: "mrkdwn",
+                    text: `<@${userId}> submitted form from *${buttonText}* button`
+                  }
+                ]
+              },
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: userInput
+                }
+              }
+            ]
           });
           
           // Continue the Claude session with the user's input
@@ -177,7 +210,7 @@ export class SlackEventHandlers {
             userId,
             userDisplayName: body.user.name || 'Unknown User',
             teamId: body.team?.id || '',
-            messageTs: threadTs,
+            messageTs: inputMessage.ts as string,
             threadTs: threadTs,
             text: userInput,
           };
@@ -233,6 +266,22 @@ export class SlackEventHandlers {
           user: userId,
           text: `❌ Error: ${error instanceof Error ? error.message : "Unknown error occurred"}`,
         });
+      }
+    });
+
+    // Handle app home opened events
+    this.app.event("app_home_opened", async ({ event, client }) => {
+      logger.info("=== APP_HOME_OPENED HANDLER TRIGGERED ===");
+      logger.info("User ID:", event.user);
+      logger.info("Tab:", event.tab);
+      
+      try {
+        // Only update home for the "home" tab
+        if (event.tab === "home") {
+          await this.updateAppHome(event.user, client);
+        }
+      } catch (error) {
+        logger.error("Error handling app home opened:", error);
       }
     });
 
@@ -367,19 +416,26 @@ export class SlackEventHandlers {
       const parallelStartTime = Date.now();
       
       // Start all parallel operations
-      const [username, conversationHistory] = await Promise.all([
+      const [username, baseConversationHistory] = await Promise.all([
         // Get or create user's GitHub username mapping
         this.getOrCreateUserMapping(context.userId, client),
         
         // Fetch conversation history from Slack if this is a thread
         context.threadTs 
           ? this.fetchConversationHistory(context.channelId, context.threadTs, client)
-          : Promise.resolve([{
-              role: 'user',
-              content: userRequest,
-              timestamp: parseFloat(context.messageTs) * 1000
-            }])
+          : Promise.resolve([])
       ]);
+      
+      // Ensure the current user request is included in the conversation history
+      // This is important for form submissions where the request isn't a regular message yet
+      const conversationHistory = [
+        ...baseConversationHistory,
+        {
+          role: 'user',
+          content: userRequest,
+          timestamp: parseFloat(context.messageTs) * 1000
+        }
+      ];
       
       logger.info(`[TIMING] Parallel operations took ${Date.now() - parallelStartTime}ms`);
       logger.info(`Session ${sessionKey} - fetched ${conversationHistory.length} messages from thread`);
@@ -674,7 +730,7 @@ export class SlackEventHandlers {
   /**
    * Format initial response message as blocks
    */
-  private formatInitialResponseBlocks(sessionKey: string, username: string, repositoryUrl: string, _jobName?: string, statusText: string = "🔄 Creating pod..."): any[] {
+  private formatInitialResponseBlocks(_sessionKey: string, username: string, repositoryUrl: string, _jobName?: string, statusText: string = "🔄 Creating pod..."): any[] {
     const blocks: any[] = [];
     
     // Context header with key info
@@ -683,15 +739,7 @@ export class SlackEventHandlers {
       elements: [
         {
           type: "mrkdwn",
-          text: `🔖 ${sessionKey}`
-        },
-        {
-          type: "mrkdwn",
           text: `📁 <${repositoryUrl.replace('github.com', 'github.dev')}|${username}>`
-        },
-        {
-          type: "mrkdwn",
-          text: `🔀 <${repositoryUrl}/compare|Create PR>`
         }
       ]
     });
@@ -971,7 +1019,9 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
           const blocks = JSON.parse(blockContent);
           
           // Check if this should open a modal/dialog
-          if (action.confirm || blocks.type === 'modal') {
+          // Always open modal if there are inputs, regardless of confirm flag
+          const hasInputs = this.hasInputElements(blocks.blocks || blocks);
+          if (hasInputs || action.confirm || blocks.type === 'modal') {
             // Open a modal with the blockkit content
             await client.views.open({
               trigger_id: (body as any).trigger_id,
@@ -994,7 +1044,8 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
                 private_metadata: JSON.stringify({
                   channel_id: channelId,
                   thread_ts: messageTs,
-                  action_id: actionId
+                  action_id: actionId,
+                  button_text: action.text?.text || actionId
                 })
               }
             });
@@ -1043,6 +1094,14 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
         
       case "approve_changes":
         await this.handleApproveAction(userId, githubUsername, channelId, messageTs, client);
+        break;
+        
+      case "override_repository":
+        await this.handleRepositoryOverride(userId, body, client);
+        break;
+        
+      case "refresh_home":
+        await this.updateAppHome(userId, client);
         break;
         
       default:
@@ -1254,7 +1313,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
   }
 
   /**
-   * Extract user inputs from view state
+   * Extract user inputs from view state with component names and context format
    */
   private extractViewInputs(stateValues: any): string {
     const inputs: string[] = [];
@@ -1265,48 +1324,84 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
       for (const actionId in block) {
         const action = block[actionId];
         
-        // Handle different input types
+        // Handle different input types with component names
         if (action.type === 'plain_text_input') {
-          inputs.push(action.value || '');
+          const value = action.value || '';
+          if (value.trim()) {
+            inputs.push(`**${actionId}** (text input): ${value}`);
+          }
         } else if (action.type === 'static_select') {
           const selected = action.selected_option;
           if (selected) {
-            inputs.push(`Selected: ${selected.text?.text || selected.value}`);
+            inputs.push(`**${actionId}** (select): ${selected.text?.text || selected.value}`);
           }
         } else if (action.type === 'multi_static_select') {
           const selected = action.selected_options || [];
           const values = selected.map((opt: any) => opt.text?.text || opt.value);
           if (values.length > 0) {
-            inputs.push(`Selected: ${values.join(', ')}`);
+            inputs.push(`**${actionId}** (multi-select): ${values.join(', ')}`);
+          }
+        } else if (action.type === 'users_select') {
+          const selectedUser = action.selected_user;
+          if (selectedUser) {
+            inputs.push(`**${actionId}** (user select): <@${selectedUser}>`);
+          }
+        } else if (action.type === 'channels_select') {
+          const selectedChannel = action.selected_channel;
+          if (selectedChannel) {
+            inputs.push(`**${actionId}** (channel select): <#${selectedChannel}>`);
+          }
+        } else if (action.type === 'conversations_select') {
+          const selectedConversation = action.selected_conversation;
+          if (selectedConversation) {
+            inputs.push(`**${actionId}** (conversation select): <#${selectedConversation}>`);
           }
         } else if (action.type === 'checkboxes') {
           const selected = action.selected_options || [];
           const values = selected.map((opt: any) => opt.text?.text || opt.value);
           if (values.length > 0) {
-            inputs.push(`Checked: ${values.join(', ')}`);
+            inputs.push(`**${actionId}** (checkboxes): ${values.join(', ')}`);
           }
         } else if (action.type === 'radio_buttons') {
           const selected = action.selected_option;
           if (selected) {
-            inputs.push(`Selected: ${selected.text?.text || selected.value}`);
+            inputs.push(`**${actionId}** (radio): ${selected.text?.text || selected.value}`);
           }
         } else if (action.type === 'datepicker') {
           if (action.selected_date) {
-            inputs.push(`Date: ${action.selected_date}`);
+            inputs.push(`**${actionId}** (date): ${action.selected_date}`);
           }
         } else if (action.type === 'timepicker') {
           if (action.selected_time) {
-            inputs.push(`Time: ${action.selected_time}`);
+            inputs.push(`**${actionId}** (time): ${action.selected_time}`);
+          }
+        } else if (action.type === 'number_input') {
+          if (action.value !== undefined && action.value !== null) {
+            inputs.push(`**${actionId}** (number): ${action.value}`);
+          }
+        } else if (action.type === 'email_text_input') {
+          const value = action.value || '';
+          if (value.trim()) {
+            inputs.push(`**${actionId}** (email): ${value}`);
+          }
+        } else if (action.type === 'url_text_input') {
+          const value = action.value || '';
+          if (value.trim()) {
+            inputs.push(`**${actionId}** (url): ${value}`);
           }
         } else if (action.value) {
           // Generic fallback for any input with a value
-          inputs.push(action.value);
+          inputs.push(`**${actionId}** (${action.type}): ${action.value}`);
         }
       }
     }
     
-    // Join all inputs or return a default message
-    return inputs.length > 0 ? inputs.join('\n') : 'Form submitted';
+    // Return formatted inputs or default message
+    if (inputs.length === 0) {
+      return 'Form submitted (no values entered)';
+    }
+    
+    return inputs.join('\n');
   }
 
   /**
@@ -1323,6 +1418,405 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
         }
       }
     }, 60000); // Check every minute
+  }
+
+  /**
+   * Check if blocks contain input elements that require a modal
+   */
+  private hasInputElements(blocks: any[]): boolean {
+    if (!Array.isArray(blocks)) return false;
+    
+    return blocks.some(block => {
+      // Check for direct input blocks
+      if (block.type === 'input') return true;
+      
+      // Check for sections with input accessories
+      if (block.type === 'section' && block.accessory) {
+        const inputTypes = ['static_select', 'multi_static_select', 'users_select', 'channels_select', 'conversations_select', 'external_select', 'plain_text_input', 'datepicker', 'timepicker', 'radio_buttons', 'checkboxes'];
+        return inputTypes.includes(block.accessory.type);
+      }
+      
+      // Check for action blocks with interactive elements
+      if (block.type === 'actions' && block.elements) {
+        return block.elements.some((el: any) => {
+          const inputTypes = ['static_select', 'multi_static_select', 'users_select', 'channels_select', 'conversations_select', 'external_select', 'datepicker', 'timepicker', 'radio_buttons', 'checkboxes'];
+          return inputTypes.includes(el.type);
+        });
+      }
+      
+      return false;
+    });
+  }
+
+  /**
+   * Update the app home tab view
+   */
+  private async updateAppHome(userId: string, client: any): Promise<void> {
+    try {
+      // Get user's GitHub username mapping
+      const githubUsername = await this.getOrCreateUserMapping(userId, client);
+      
+      // Get repository information
+      let repository;
+      const cachedRepo = this.repositoryCache.get(githubUsername);
+      if (cachedRepo && Date.now() - cachedRepo.timestamp < this.CACHE_TTL) {
+        repository = cachedRepo.repository;
+      } else {
+        repository = await this.repoManager.ensureUserRepository(githubUsername);
+        this.repositoryCache.set(githubUsername, { repository, timestamp: Date.now() });
+      }
+      
+      // Build home tab blocks
+      const blocks = await this.buildHomeTabBlocks(userId, githubUsername, repository, client);
+      
+      // Update the app home
+      await client.views.publish({
+        user_id: userId,
+        view: {
+          type: 'home',
+          blocks: blocks
+        }
+      });
+      
+      logger.info(`Updated app home for user ${userId} (${githubUsername})`);
+      
+    } catch (error) {
+      logger.error(`Failed to update app home for user ${userId}:`, error);
+      
+      // Show error home tab
+      const errorBlocks = [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: "❌ *Error loading your workspace*\n\nThere was an issue loading your GitHub repository information. Please try again later or contact support."
+          }
+        },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: {
+                type: "plain_text",
+                text: "🔄 Retry"
+              },
+              action_id: "refresh_home",
+              style: "primary"
+            }
+          ]
+        }
+      ];
+      
+      try {
+        await client.views.publish({
+          user_id: userId,
+          view: {
+            type: 'home',
+            blocks: errorBlocks
+          }
+        });
+      } catch (publishError) {
+        logger.error("Failed to publish error home tab:", publishError);
+      }
+    }
+  }
+
+  /**
+   * Build the blocks for the home tab
+   */
+  private async buildHomeTabBlocks(userId: string, githubUsername: string, repository: any, client: any): Promise<any[]> {
+    const blocks: any[] = [];
+    
+    // Welcome header
+    const userInfo = await client.users.info({ user: userId });
+    const displayName = userInfo.user?.profile?.display_name || userInfo.user?.real_name || githubUsername;
+    
+    blocks.push({
+      type: "header",
+      text: {
+        type: "plain_text",
+        text: `👋 Welcome, ${displayName}!`
+      }
+    });
+    
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "This is your Claude Code workspace. All your coding sessions and files are automatically saved to your GitHub repository."
+      }
+    });
+    
+    blocks.push({ type: "divider" });
+    
+    // Current Repository Section
+    const repoDisplayText = repository.isOverride 
+      ? `*📁 Active Repository* (Custom)\n<${repository.repositoryUrl}|${repository.repositoryName}>`
+      : `*📁 Active Repository*\n<${repository.repositoryUrl}|${githubUsername}>`;
+      
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: repoDisplayText
+      },
+      accessory: {
+        type: "button",
+        text: {
+          type: "plain_text",
+          text: repository.isOverride ? "🔧 Change" : "🔧 Override"
+        },
+        action_id: "override_repository",
+        style: repository.isOverride ? "danger" : "primary"
+      }
+    });
+    
+    // Repository details with override indicator
+    const contextElements = [
+      {
+        type: "mrkdwn",
+        text: `🌐 Clone URL: \`${repository.cloneUrl}\``
+      }
+    ];
+    
+    if (repository.isOverride) {
+      contextElements.push({
+        type: "mrkdwn",
+        text: "⚠️ Using custom repository override"
+      });
+    }
+    
+    blocks.push({
+      type: "context",
+      elements: contextElements
+    });
+    
+    blocks.push({ type: "divider" });
+    
+    // Quick Actions Section
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "*⚡ Quick Actions*"
+      }
+    });
+    
+    blocks.push({
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "💻 Open in GitHub.dev"
+          },
+          url: repository.repositoryUrl.replace('github.com', 'github.dev'),
+          action_id: "open_github_dev"
+        },
+        {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "🔄 Create Pull Request"
+          },
+          url: `${repository.repositoryUrl}/compare`,
+          action_id: "create_pr_link"
+        },
+        {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "📊 Repository Insights"
+          },
+          url: `${repository.repositoryUrl}/pulse`,
+          action_id: "repo_insights"
+        }
+      ]
+    });
+    
+    blocks.push({ type: "divider" });
+    
+    // Getting Started Section
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "*🚀 Getting Started*\n\nTo start a coding session:\n• Send a direct message to this bot\n• Each thread becomes a persistent conversation\n• All changes are automatically committed"
+      }
+    });
+    
+    // Recent Activity (placeholder for future implementation)
+    blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `🕒 Repository created: ${new Date(repository.createdAt).toLocaleString()}`
+        }
+      ]
+    });
+    
+    return blocks;
+  }
+
+  /**
+   * Handle repository override action
+   */
+  private async handleRepositoryOverride(userId: string, body: any, client: any): Promise<void> {
+    try {
+      // Open modal for repository override
+      await client.views.open({
+        trigger_id: body.trigger_id,
+        view: {
+          type: 'modal',
+          callback_id: 'repository_override_modal',
+          title: {
+            type: 'plain_text',
+            text: 'Override Repository'
+          },
+          blocks: [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "*Override your GitHub repository*\n\nEnter a custom GitHub repository URL to use for your Claude Code sessions. This will override the default repository created for you."
+              }
+            },
+            {
+              type: "input",
+              block_id: "repository_url_block",
+              element: {
+                type: "plain_text_input",
+                action_id: "repository_url",
+                placeholder: {
+                  type: "plain_text",
+                  text: "https://github.com/owner/repo-name"
+                }
+              },
+              label: {
+                type: "plain_text",
+                text: "Repository URL"
+              }
+            },
+            {
+              type: "context",
+              elements: [
+                {
+                  type: "mrkdwn",
+                  text: "⚠️ Make sure you have write access to this repository. The bot will clone and make changes to it."
+                }
+              ]
+            }
+          ],
+          submit: {
+            type: 'plain_text',
+            text: 'Override'
+          },
+          close: {
+            type: 'plain_text',
+            text: 'Cancel'
+          },
+          private_metadata: JSON.stringify({
+            user_id: userId
+          })
+        }
+      });
+      
+    } catch (error) {
+      logger.error("Failed to open repository override modal:", error);
+      
+      // Send ephemeral error message
+      await client.chat.postEphemeral({
+        channel: userId, // DM channel
+        user: userId,
+        text: "❌ Failed to open repository override dialog. Please try again."
+      });
+    }
+  }
+
+  /**
+   * Handle repository override modal submission
+   */
+  private async handleRepositoryOverrideSubmission(userId: string, view: any, client: any): Promise<void> {
+    try {
+      // Extract repository URL from the form
+      const values = view.state.values;
+      const repositoryUrl = values.repository_url_block?.repository_url?.value;
+      
+      if (!repositoryUrl) {
+        logger.warn(`Empty repository URL provided by user ${userId}`);
+        return;
+      }
+      
+      // Validate GitHub URL format
+      const githubUrlPattern = /^https:\/\/github\.com\/([^\/]+)\/([^\/]+)(?:\.git)?$/;
+      const match = repositoryUrl.match(githubUrlPattern);
+      
+      if (!match) {
+        logger.warn(`Invalid GitHub URL format provided by user ${userId}: ${repositoryUrl}`);
+        // Note: We can't send error messages from view submission handler in Slack
+        // The user will need to try again
+        return;
+      }
+      
+      const [, owner, repo] = match;
+      const normalizedUrl = `https://github.com/${owner}/${repo}`;
+      const cloneUrl = `https://github.com/${owner}/${repo}.git`;
+      
+      // Get user's GitHub username mapping
+      const githubUsername = await this.getOrCreateUserMapping(userId, client);
+      
+      // Create repository override info
+      const overrideRepository = {
+        username: githubUsername,
+        repositoryName: repo,
+        repositoryUrl: normalizedUrl,
+        cloneUrl: cloneUrl,
+        createdAt: Date.now(),
+        lastUsed: Date.now(),
+        isOverride: true
+      };
+      
+      // Update cache with the override
+      this.repositoryCache.set(githubUsername, { 
+        repository: overrideRepository, 
+        timestamp: Date.now() 
+      });
+      
+      // Update user mapping if needed (in case they want to use different repo name)
+      // For override, we keep the original username but use the custom repo
+      
+      logger.info(`Repository override set for user ${userId} (${githubUsername}): ${normalizedUrl}`);
+      
+      // Refresh the home tab to show the new repository
+      await this.updateAppHome(userId, client);
+      
+      // Send a DM confirmation
+      try {
+        await client.chat.postMessage({
+          channel: userId,
+          text: `✅ *Repository Override Successful*\n\nYour Claude Code sessions will now use: <${normalizedUrl}|${owner}/${repo}>\n\nMake sure you have write access to this repository. All your coding sessions will be saved there.`
+        });
+      } catch (dmError) {
+        logger.error("Failed to send override confirmation DM:", dmError);
+        // Don't throw - the override was still successful
+      }
+      
+    } catch (error) {
+      logger.error(`Failed to handle repository override for user ${userId}:`, error);
+      
+      // Try to send error DM
+      try {
+        await client.chat.postMessage({
+          channel: userId,
+          text: "❌ *Repository Override Failed*\n\nThere was an error setting up your custom repository. Please check that:\n• The URL is a valid GitHub repository\n• You have write access to the repository\n• The repository exists\n\nTry again from your Home tab."
+        });
+      } catch (dmError) {
+        logger.error("Failed to send override error DM:", dmError);
+      }
+    }
   }
 
   /**

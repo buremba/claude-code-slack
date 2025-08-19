@@ -49,7 +49,11 @@ dev:
 	@echo "   - Automatically rebuild and redeploy"
 	@echo "   - Stream logs to console"
 	@echo ""
-	@skaffold dev --port-forward
+	@skaffold dev --port-forward $(if $(filter --debug,$(MAKECMDGOALS)),--verbosity=debug)
+
+# Catch-all target to prevent errors when passing arguments
+%:
+	@:
 
 # Run test bot
 test:
@@ -67,10 +71,10 @@ restart:
 	@kubectl rollout status deployment/peerbot-dispatcher -n peerbot
 
 # Clean up
-clean:
-	@echo "🧹 Cleaning up..."
+destroy:
+	@echo "🧹 Destroying..."
 	@skaffold delete --namespace=peerbot || true
-	@echo "✅ Cleanup complete"
+	@echo "✅ Deployment destroyed"
 
 # Secret management
 secrets:

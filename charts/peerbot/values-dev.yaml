@@ -66,9 +66,7 @@ gcs:
   projectId: ""
 
 claude:
-  model: "claude-3-5-sonnet-20241022"
   timeoutMinutes: "5"
-  allowedTools: ""
 
 session:
   timeoutMinutes: 5

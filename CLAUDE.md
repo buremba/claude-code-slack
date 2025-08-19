@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-- You MUST only do what has been asked; nothing more, nothing less.
+- You MUST only do what has been asked; nothing more, nothing less. You can check logs with k8s to understand the recent behavior the user is asking for.
 - Anytime you make changes in the code that should be tested, you MUST run ./test-bot.js and make sure it works properly.
 - If you create ephemeral files, you MUST delete them when you're done with them.
 - Always use Skaffold to build and run the Slack bot.
@@ -26,3 +26,4 @@ The bot updates automatically when running `make dev` - no manual steps needed!
 
 - Rate limiting is disabled in local development (dispatcher.disableRateLimit: true in values-local.yaml)
 - To manually rebuild worker image if needed: `docker build -f Dockerfile.worker -t claude-worker:latest .`
+   

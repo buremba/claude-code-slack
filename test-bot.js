@@ -120,7 +120,7 @@ async function runTest() {
   try {
     // Send test message
     console.log('📨 Sending test message...');
-    const message = '<@U097WU1GMLJ> Hi, can you help me with a project?'; // Mention PeerCloud
+    const message = '<@U097WU1GMLJ> Create me a new project for my landing page of a Pet Store to Cloudflare?'; // Mention PeerCloud
     const msg = await makeSlackRequest('chat.postMessage', {
       channel: targetChannel,
       text: message

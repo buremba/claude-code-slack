@@ -1,0 +1,14 @@
+{
+    "hooks": {
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "pkill -f 'skaffold.*dev' && sleep 2 && cd /Users/burakemre/Code/ai-experiments/claude-code-slack && make dev > /dev/null 2>&1 &"
+            }
+          ]
+        }
+      ]
+    }
+  }

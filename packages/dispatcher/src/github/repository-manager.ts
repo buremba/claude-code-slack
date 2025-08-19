@@ -51,19 +51,24 @@ export class GitHubRepositoryManager {
       // Check if repository exists
       let repository: UserRepository | undefined;
       
-      // First, try to find the repository under the configured organization/user
-      const possibleOwners = [this.config.organization];
+      // Determine the owner(s) to check
+      const possibleOwners: string[] = [];
       
-      // Also check if it exists under the authenticated user
+      if (this.config.organization && this.config.organization.trim() !== "") {
+        // If organization is specified, check there first
+        possibleOwners.push(this.config.organization);
+      }
+      
+      // Always add authenticated user as fallback
       try {
         const authUser = await this.octokit.rest.users.getAuthenticated();
-        if (authUser.data.login !== this.config.organization) {
+        if (!possibleOwners.includes(authUser.data.login)) {
           possibleOwners.push(authUser.data.login);
         }
       } catch (e) {
         logger.warn('Could not get authenticated user:', e);
       }
-      
+
       let foundRepo = false;
       for (const owner of possibleOwners) {
         try {
@@ -90,6 +95,7 @@ export class GitHubRepositoryManager {
           if (error.status !== 404) {
             throw error;
           }
+          // Continue to next owner
         }
       }
       
@@ -125,27 +131,14 @@ export class GitHubRepositoryManager {
       
       logger.info(`Creating repository for user ${username}...`);
       
-      // Check if the configured organization is actually a user account
+      // Try to create repository in organization first, fallback to authenticated user
       let repoResponse;
-      try {
-        // First try to create in org
-        repoResponse = await this.octokit.rest.repos.createInOrg({
-          org: this.config.organization,
-          name: repositoryName,
-          description: `Personal workspace for ${username} - Claude Code Slack Bot`,
-          private: false,
-          has_issues: true,
-          has_projects: false,
-          has_wiki: false,
-          auto_init: true,
-          gitignore_template: "Node",
-          license_template: "mit",
-        });
-      } catch (orgError: any) {
-        // If org creation fails with 404, try creating for authenticated user
-        if (orgError.status === 404) {
-          logger.info(`Organization ${this.config.organization} not found, trying to create repo for authenticated user...`);
-          repoResponse = await this.octokit.rest.repos.createForAuthenticatedUser({
+      
+      if (this.config.organization && this.config.organization.trim() !== "") {
+        try {
+          // Try to create in organization first
+          repoResponse = await this.octokit.rest.repos.createInOrg({
+            org: this.config.organization,
             name: repositoryName,
             description: `Personal workspace for ${username} - Claude Code Slack Bot`,
             private: false,
@@ -156,9 +149,39 @@ export class GitHubRepositoryManager {
             gitignore_template: "Node",
             license_template: "mit",
           });
-        } else {
-          throw orgError;
+          logger.info(`Created repository for user ${username} in organization ${this.config.organization}`);
+        } catch (orgError: any) {
+          if (orgError.status === 404) {
+            logger.info(`Organization ${this.config.organization} not found, creating repository for authenticated user...`);
+            repoResponse = await this.octokit.rest.repos.createForAuthenticatedUser({
+              name: repositoryName,
+              description: `Personal workspace for ${username} - Claude Code Slack Bot`,
+              private: false,
+              has_issues: true,
+              has_projects: false,
+              has_wiki: false,
+              auto_init: true,
+              gitignore_template: "Node",
+              license_template: "mit",
+            });
+          } else {
+            throw orgError;
+          }
         }
+      } else {
+        // No organization specified, create for authenticated user
+        logger.info(`No organization specified, creating repository for authenticated user...`);
+        repoResponse = await this.octokit.rest.repos.createForAuthenticatedUser({
+          name: repositoryName,
+          description: `Personal workspace for ${username} - Claude Code Slack Bot`,
+          private: false,
+          has_issues: true,
+          has_projects: false,
+          has_wiki: false,
+          auto_init: true,
+          gitignore_template: "Node",
+          license_template: "mit",
+        });
       }
 
       // Create initial README

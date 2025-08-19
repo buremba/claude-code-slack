@@ -1,4 +1,4 @@
-import { marked, MarkedExtension } from "marked";
+import { MarkedExtension, Marked } from "marked";
 
 /**
  * Docs: https://marked.js.org/using_pro#renderer
@@ -146,10 +146,11 @@ function cleanUrl(href: string) {
   }
 }
 
-marked.use({ renderer });
-
 export function markdownToSlack(markdown: string): string {
-  return marked
+  const markedInstance = new Marked();
+  markedInstance.use({ renderer });
+  
+  return markedInstance
     .parse(markdown, {
       // Available options: https://marked.js.org/using_advanced#options
       async: false,

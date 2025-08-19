@@ -7,6 +7,9 @@ import { SlackTokenManager } from "./slack/token-manager";
 import { extractFinalResponse } from "./claude-output-parser";
 import type { WorkerConfig } from "./types";
 import logger from "./logger";
+import { execSync } from "node:child_process";
+import fs from "node:fs";
+import { dirname, relative } from "node:path";
 
 export class ClaudeWorker {
   private sessionRunner: ClaudeSessionRunner;
@@ -74,6 +77,80 @@ export class ClaudeWorker {
     }
   }
 
+  private listMakefilePaths(rootDirectory: string): string[] {
+    const foundMakefiles: string[] = [];
+    const ignored = new Set([
+      "node_modules",
+      ".git",
+      ".next",
+      "dist",
+      "build",
+      "vendor",
+      "target",
+      ".venv",
+      "venv"
+    ]);
+
+    const walk = (dir: string): void => {
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const p = `${dir}/${entry.name}`;
+        if (entry.isDirectory()) {
+          if (ignored.has(entry.name)) continue;
+          walk(p);
+        } else if (entry.isFile() && entry.name === "Makefile") {
+          foundMakefiles.push(p);
+        }
+      }
+    };
+
+    walk(rootDirectory);
+    return foundMakefiles;
+  }
+
+  private extractMakeTargets(makefileDirectory: string): string[] {
+    try {
+      const stdout = execSync(`make -C "${makefileDirectory}" -qp`, { stdio: ["ignore", "pipe", "ignore"], encoding: "utf-8" });
+      const lineRegex = new RegExp('^[a-zA-Z0-9][^$#\\/\\t%=:]*:([^=]|$)');
+      const targets = new Set<string>();
+      for (const line of stdout.split("\n")) {
+        if (!lineRegex.test(line)) continue;
+        const name = line.split(":")[0];
+        if (!name || name.startsWith(".")) continue;
+        if (name === "Makefile" || name === "makefile" || name === "GNUmakefile") continue;
+        targets.add(name);
+      }
+      return Array.from(targets).sort((a, b) => a.localeCompare(b));
+    } catch {
+      return [];
+    }
+  }
+
+  private getMakeTargetsSummary(): string {
+    const root = `/workspace/${this.config.username}`;
+    const makefiles = this.listMakefilePaths(root);
+    if (makefiles.length === 0) return "  - none";
+
+    const lines: string[] = [];
+    for (const mf of makefiles) {
+      const dir = dirname(mf);
+      const rel = relative(root, dir) || ".";
+      const targets = this.extractMakeTargets(dir);
+      lines.push(`  - ${rel}`);
+      if (targets.length === 0) {
+        lines.push("    - (none)");
+      } else {
+        for (const t of targets) lines.push(`    - ${t}`);
+      }
+    }
+    return lines.join("\n");
+  }
+
   /**
    * Check if this is a simple query that doesn't need repository access
    */
@@ -124,15 +201,7 @@ export class ClaudeWorker {
         elements: [
           {
             type: "mrkdwn",
-            text: `🔖 ${this.config.sessionKey}`
-          },
-          {
-            type: "mrkdwn",
-            text: `📁 ${this.config.username}`
-          },
-          {
-            type: "mrkdwn",
-            text: `🔀 Setting up...`
+            text: `🪚 ${this.config.username}`
           },
           {
             type: "mrkdwn",
@@ -169,18 +238,14 @@ export class ClaudeWorker {
         
         // Now that branch exists, update context block with proper URLs
         const branchName = `claude/${this.config.sessionKey.replace(/\./g, "-")}`;
-        const pwd = process.cwd();
+        const workspaceDir = `/workspace/${this.config.username}`;
         
         contextBlock = {
           type: "context",
           elements: [
             {
               type: "mrkdwn",
-              text: `🔖 ${this.config.sessionKey}`
-            },
-            {
-              type: "mrkdwn",
-              text: `📁 <${this.config.repositoryUrl.replace('github.com', 'github.dev')}/tree/${branchName}|${this.config.username}>`
+              text: `🪚 <${this.config.repositoryUrl.replace('github.com', 'github.dev')}/tree/${branchName}|${this.config.username}>`
             },
             {
               type: "mrkdwn",
@@ -188,7 +253,7 @@ export class ClaudeWorker {
             },
             {
               type: "mrkdwn",
-              text: `📂 ${pwd}`
+              text: `📂 ${workspaceDir}`
             }
           ]
         };
@@ -360,48 +425,63 @@ export class ClaudeWorker {
   private generateCustomInstructions(): string {
     return `
 You are Claude Code running in a pod on K8S for user ${this.config.username}. 
-You MUST generate Markdown content that will be rendered in user's messaging app. Here is fence code blocks feature:
-- You can add \`action\` to the code block to indicate a button should be rendered at the end of the message to trigger the action with its label. You must have at least one or more blocks with action_id for the user to take action from your message as the next steps.
-- The \`confirm\` flag enables a dialog to be shown the user before the action is executed. 
-- The \`show\` flag enables the content to be shown to the user.
-- The blockkit type will be rendered natively in Slack. The action_id supports following types:
-1. blockkit: Renders the native Slack components. Use it to collect input from the user in a structured way when confirm is true and show is false. If the value of show is true, the content will be rendered in the message, don't use it if you use inputs, checkboxes, or and user inputs.
-2. bash/shell: Runs the script in the container.
-3. python: Uses \`uv\` to install dependencies and run the script. You MUST use shebang on top of the script to define dependencies if the project is not a Python project. 
-5. javascript/typescript: Runs the script in the container via \`bun run\`.
+You MUST generate Markdown content that will be rendered in user's messaging app. 
 
-\`\`\`blockkit { action: "Example Button", confirm: false, show: false }
+**Code Block Actions:**
+You can add action metadata to code blocks to create interactive buttons. The metadata goes in the fence info, NOT in the content.
+
+**CRITICAL: Metadata goes in fence info, content contains only the actual code/JSON.**
+
+**Examples:**
+
+\`\`\`bash { action: "Deploy App", confirm: true, show: true }
+#!/bin/bash
+npm run build
+docker build -t myapp .
+\`\`\`
+
+\`\`\`blockkit { action: "Configure Settings", confirm: false, show: false }
 {
   "blocks": [
     {
-      "type": "actions",
-      "elements": [
-        {
-          "type": "button",
-          "text": {
-            "type": "plain_text",
-            "text": "Click Me"
-          },
-          "action_id": "button_click"
-        }
-      ]
+      "type": "input",
+      "element": {
+        "type": "plain_text_input",
+        "action_id": "name_input"
+      },
+      "label": {
+        "type": "plain_text",
+        "text": "Project Name"
+      }
     }
   ]
-  }
+}
 \`\`\`
 
+**CRITICAL FOR BLOCKKIT FORMS:**
+- ALWAYS include action metadata: \`{ action: "Button Name", confirm: false, show: false }\`
+- NEVER use plain \`\`\`blockkit without metadata
+- Forms without action metadata will NOT work properly
+
 **Environment:**
-- Working in: /workspace/${this.config.username}  
-- Repository: ${this.config.repositoryUrl}
+- Working dir: /workspace/${this.config.username}  
+- Repo: ${this.config.repositoryUrl}
 - Session: ${this.config.sessionKey}
+- Makefile directories and targets (indicating projects):
+${this.getMakeTargetsSummary()}
 
-**Important guidelines:**
-- You're working on branch: claude/${this.config.sessionKey.replace(/\./g, "-")}
-- Focus on solving the user's specific request
-- If you make any changes to the files, let the user know that they can click "Create Pull Request" button to review and merge the changes. All file changes are automatically saved and pushed to GitHub after you're done.
+**Guidelines:**
+- Branch: claude/${this.config.sessionKey.replace(/\./g, "-")}
+- Push only to this branch (no PR creation, the user has to create PR manually).
+- Focus on the user's request.
+- Always prefer numbered lists over bullet points.
+- After changes, ask the user to click "Create Pull Request".
 
-**Session context:**
-This is ${this.config.threadTs ? "a continued conversation in a thread" : "a new conversation"}.`
+**Instructions:**
+1. New project: create a folder in the current directory; ask for name and deployment type in a form. Collect secrets if needed. Deployment types are Node.js/bun, Python/uv, Docker, Docker Compose, Cloudflare (install flarectl and ask for personal access token).
+2. Feature/bug: if no Makefile in current dir, show a dropdown of folders containing a Makefile in a form; user selects one; set the current directory to the selected folder.
+3. Secrets: if required, collect values via form and map to .env file before running make commands.
+}.`
 .trim();
   }
 
@@ -574,13 +654,45 @@ async function main() {
 // Handle process signals
 process.on("SIGTERM", async () => {
   logger.info("Received SIGTERM, shutting down gracefully...");
+  await appendTerminationMessage("SIGTERM");
   process.exit(0);
 });
 
 process.on("SIGINT", async () => {
   logger.info("Received SIGINT, shutting down gracefully...");
+  await appendTerminationMessage("SIGINT");
   process.exit(0);
 });
+
+/**
+ * Append termination message to Slack when worker is terminated
+ */
+async function appendTerminationMessage(signal: string): Promise<void> {
+  try {
+    if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_RESPONSE_CHANNEL && process.env.SLACK_RESPONSE_TS) {
+      const slackIntegration = new SlackIntegration({
+        token: process.env.SLACK_BOT_TOKEN,
+        refreshToken: process.env.SLACK_REFRESH_TOKEN,
+        clientId: process.env.SLACK_CLIENT_ID,
+        clientSecret: process.env.SLACK_CLIENT_SECRET,
+      });
+      
+      await slackIntegration.updateProgress(
+        `🛑 **Worker terminated (${signal})** - The host is terminated and not processing further requests.`
+      );
+      
+      // Update reaction to show termination
+      const originalMessageTs = process.env.ORIGINAL_MESSAGE_TS;
+      if (originalMessageTs) {
+        await slackIntegration.removeReaction("gear", originalMessageTs).catch(() => {});
+        await slackIntegration.removeReaction("eyes", originalMessageTs).catch(() => {});
+        await slackIntegration.addReaction("stop_sign", originalMessageTs).catch(() => {});
+      }
+    }
+  } catch (error) {
+    logger.error(`Failed to send ${signal} termination message to Slack:`, error);
+  }
+}
 
 // Start the worker
 main();
