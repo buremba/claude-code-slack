@@ -282,6 +282,9 @@ export class ClaudeWorker {
         ? JSON.parse(this.config.conversationHistory)
         : [];
       logger.info(`Loaded ${conversationHistory.length} messages from conversation history`);
+      
+      // Update progress to show we're loading context
+      await this.slackIntegration.updateProgress("📚 Loading conversation context...");
 
       // Prepare session context with conversation history
       const sessionContext = {
@@ -296,6 +299,9 @@ export class ClaudeWorker {
         customInstructions: this.generateCustomInstructions(),
         conversationHistory, // Include the parsed conversation history
       };
+
+      // Update progress to show we're starting Claude
+      await this.slackIntegration.updateProgress("🤖 Initializing Claude...");
 
       // Execute Claude session with conversation history
       logger.info(`[TIMING] Starting Claude session at: ${new Date().toISOString()}`);
@@ -314,6 +320,8 @@ export class ClaudeWorker {
           if (!firstOutputLogged && update.type === "output") {
             logger.info(`[TIMING] First Claude output at: ${new Date().toISOString()} (${Date.now() - claudeStartTime}ms after Claude start)`);
             firstOutputLogged = true;
+            // Update progress to show Claude is now actively working
+            await this.slackIntegration.sendTyping();
           }
           // Stream progress to Slack
           if (update.type === "output" && update.data) {
@@ -478,9 +486,12 @@ ${this.getMakeTargetsSummary()}
 - After changes, ask the user to click "Create Pull Request".
 
 **Instructions:**
-1. New project: create a folder in the current directory; ask for name and deployment type in a form. Collect secrets if needed. Deployment types are Node.js/bun, Python/uv, Docker, Docker Compose, Cloudflare (install flarectl and ask for personal access token).
+1. New project: create a folder in the current directory; ask for name, tech stack (dbname,providername,apiservicename etc.) in a form and autopopulate if provided. Collect secrets if needed. Deployment types are Node.js/bun, Python/uv, Docker, Docker Compose, Cloudflare (install flarectl and ask for personal access token).
 2. Feature/bug: if no Makefile in current dir, show a dropdown of folders containing a Makefile in a form; user selects one; set the current directory to the selected folder.
 3. Secrets: if required, collect values via form and map to .env file before running make commands.
+4. New hire: If the user says he wants to hire somebody, create a Claude agent on .claude/agents/agent-name.md and in there add it's traits based on the form values the user enters.
+5. If the user wants to remember something, add it to CLAUDE.md file.
+6. If the user wants to create an action, create a new file in .claude/actions/action-name.md and in there add the action's traits based on the form values the user enters.
 }.`
 .trim();
   }

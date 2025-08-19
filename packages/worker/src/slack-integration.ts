@@ -6,6 +6,12 @@ import { SlackError } from "./types";
 import { markdownToSlackWithBlocks } from "./slack/blockkit-parser";
 import logger from "./logger";
 
+interface TodoItem {
+  id: string;
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 export class SlackIntegration {
   private client: WebClient;
   private responseChannel: string;
@@ -14,6 +20,7 @@ export class SlackIntegration {
   private updateQueue: string[] = [];
   private isProcessingQueue = false;
   private contextBlock: any = null; // Store the context header block
+  private currentTodos: TodoItem[] = []; // Store the current todo list
 
   constructor(config: SlackConfig) {
     
@@ -60,10 +67,30 @@ export class SlackIntegration {
    */
   async streamProgress(data: any): Promise<void> {
     try {
-      // Only stream certain types of updates to avoid spam
-      if (this.shouldStreamUpdate(data)) {
-        // Simple working status - no need to show details
-        await this.updateProgress(`💭 Working...`);
+      // Handle both string and object data
+      let dataToCheck: string;
+      
+      if (typeof data === "string" && data.trim()) {
+        dataToCheck = data;
+      } else if (typeof data === "object") {
+        dataToCheck = JSON.stringify(data);
+      } else {
+        return;
+      }
+      
+      // Check if this contains TodoWrite tool usage
+      const todoData = this.extractTodoList(dataToCheck);
+      if (todoData) {
+        this.currentTodos = todoData;
+        await this.updateProgressWithTodos();
+        return;
+      }
+      
+      // Stream the content normally
+      if (typeof data === "string") {
+        await this.updateProgress(data);
+      } else if (typeof data === "object" && data.content) {
+        await this.updateProgress(data.content);
       }
     } catch (error) {
       logger.error("Failed to stream progress:", error);
@@ -172,22 +199,6 @@ export class SlackIntegration {
     }
   }
 
-  /**
-   * Determine if we should stream this update
-   */
-  private shouldStreamUpdate(data: any): boolean {
-    // Stream significant updates but not every tiny piece of output
-    if (typeof data === "object" && data.type) {
-      return ["tool_use", "completion", "error"].includes(data.type);
-    }
-    
-    if (typeof data === "string") {
-      // Stream text that looks like significant output
-      return data.length > 10 && data.length < 500;
-    }
-    
-    return false;
-  }
 
 
   /**
@@ -301,8 +312,13 @@ export class SlackIntegration {
    */
   async sendTyping(): Promise<void> {
     try {
-      // Post a temporary "typing" message that we'll update
-      await this.updateProgress("💭 Claude is thinking...");
+      // Show current todos if available, otherwise show thinking message
+      if (this.currentTodos.length > 0) {
+        await this.updateProgressWithTodos();
+      } else {
+        // Post a temporary "typing" message that we'll update
+        await this.updateProgress("💭 Claude is thinking...");
+      }
 
     } catch (error) {
       logger.error("Failed to send typing indicator:", error);
@@ -344,11 +360,74 @@ export class SlackIntegration {
   }
 
   /**
+   * Extract todo list from Claude's JSON output
+   */
+  private extractTodoList(data: string): TodoItem[] | null {
+    try {
+      const lines = data.split('\n');
+      for (const line of lines) {
+        if (line.trim().startsWith('{')) {
+          const parsed = JSON.parse(line);
+          
+          // Check if this is a tool_use for TodoWrite
+          if (parsed.type === "assistant" && parsed.message?.content) {
+            for (const content of parsed.message.content) {
+              if (content.type === "tool_use" && content.name === "TodoWrite" && content.input?.todos) {
+                return content.input.todos;
+              }
+            }
+          }
+          
+          // Check if this is a tool_result from TodoWrite
+          if (parsed.type === "user" && parsed.message?.content) {
+            for (const content of parsed.message.content) {
+              if (content.type === "tool_result" && content.content?.includes("Todos have been modified successfully")) {
+                // Try to extract todos from previous context
+                return null; // Let the assistant message handle this
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      // Not JSON or parsing failed
+    }
+    return null;
+  }
+
+  /**
+   * Update progress with todo list display
+   */
+  private async updateProgressWithTodos(): Promise<void> {
+    if (this.currentTodos.length === 0) {
+      await this.updateProgress("📝 Task list updated");
+      return;
+    }
+
+    const todoDisplay = this.formatTodoList(this.currentTodos);
+    await this.updateProgress(todoDisplay);
+  }
+
+  /**
+   * Format todo list for Slack display
+   */
+  private formatTodoList(todos: TodoItem[]): string {
+    const todoLines = todos.map(todo => {
+      const checkbox = todo.status === "completed" ? "☑️" : "☐";
+      const status = todo.status === "in_progress" ? " (in progress)" : "";
+      return `${checkbox} ${todo.content}${status}`;
+    });
+
+    return `📝 **Task Progress**\n\n${todoLines.join('\n')}`;
+  }
+
+  /**
    * Cleanup Slack integration
    */
   cleanup(): void {
     // Clear any pending updates
     this.updateQueue = [];
     this.isProcessingQueue = false;
+    this.currentTodos = [];
   }
 }

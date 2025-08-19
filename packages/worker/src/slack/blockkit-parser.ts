@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { marked, MarkedExtension, Marked } from "marked";
+import { MarkedExtension, Marked } from "marked";
 import logger from "../logger";
 
 interface BlockMetadata {
@@ -153,7 +153,6 @@ function generateActionButton(
 class BlockKitRenderer {
   private parsedBlocks: ParsedBlock[] = [];
   private baseRenderer: MarkedExtension["renderer"];
-  private markedInstance?: Marked;
 
   constructor() {
     this.baseRenderer = {
@@ -306,8 +305,8 @@ class BlockKitRenderer {
     }
   }
 
-  setMarkedInstance(instance: Marked): void {
-    this.markedInstance = instance;
+  setMarkedInstance(_instance: Marked): void {
+    // Method kept for compatibility, no longer storing instance
   }
 
   getRenderer(): MarkedExtension["renderer"] {
@@ -345,12 +344,19 @@ export function markdownToSlackWithBlocks(markdown: string): SlackMessage {
   // Pass the marked instance back to the renderer so it can use it for recursive parsing
   renderer.setMarkedInstance(markedInstance);
   
-  const text = markedInstance
-    .parse(markdown, {
-      async: false,
-      gfm: true,
-    })
-    .trimEnd();
+  let text: string;
+  try {
+    text = markedInstance
+      .parse(markdown, {
+        async: false,
+        gfm: true,
+      })
+      .trimEnd();
+  } catch (error) {
+    // If markdown parsing fails, fall back to plain text
+    logger.error("Markdown parsing failed, using plain text:", error);
+    text = markdown;
+  }
   
   const parsedBlocks = renderer.getBlocks();
   
@@ -418,10 +424,15 @@ export function extractActionableBlocks(markdown: string): ParsedBlock[] {
   const markedInstance = new Marked();
   markedInstance.use({ renderer: renderer.getRenderer() });
   
-  markedInstance.parse(markdown, {
-    async: false,
-    gfm: true,
-  });
+  try {
+    markedInstance.parse(markdown, {
+      async: false,
+      gfm: true,
+    });
+  } catch (error) {
+    // If markdown parsing fails, log the error but continue
+    logger.error("Markdown parsing failed in extractActionableBlocks:", error);
+  }
   
   return renderer.getBlocks();
 }

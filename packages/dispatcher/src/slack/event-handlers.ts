@@ -190,7 +190,7 @@ export class SlackEventHandlers {
                 elements: [
                   {
                     type: "mrkdwn",
-                    text: `<@${userId}> submitted form from *${buttonText}* button`
+                    text: `<@${userId}> submitted form`
                   }
                 ]
               },
@@ -1328,70 +1328,70 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
         if (action.type === 'plain_text_input') {
           const value = action.value || '';
           if (value.trim()) {
-            inputs.push(`**${actionId}** (text input): ${value}`);
+            inputs.push(`📝 *${actionId}*: ${value}`);
           }
         } else if (action.type === 'static_select') {
           const selected = action.selected_option;
           if (selected) {
-            inputs.push(`**${actionId}** (select): ${selected.text?.text || selected.value}`);
+            inputs.push(`🔽 *${actionId}*: ${selected.text?.text || selected.value}`);
           }
         } else if (action.type === 'multi_static_select') {
           const selected = action.selected_options || [];
           const values = selected.map((opt: any) => opt.text?.text || opt.value);
           if (values.length > 0) {
-            inputs.push(`**${actionId}** (multi-select): ${values.join(', ')}`);
+            inputs.push(`🧩 *${actionId}*: ${values.join(', ')}`);
           }
         } else if (action.type === 'users_select') {
           const selectedUser = action.selected_user;
           if (selectedUser) {
-            inputs.push(`**${actionId}** (user select): <@${selectedUser}>`);
+            inputs.push(`👤 *${actionId}*: <@${selectedUser}>`);
           }
         } else if (action.type === 'channels_select') {
           const selectedChannel = action.selected_channel;
           if (selectedChannel) {
-            inputs.push(`**${actionId}** (channel select): <#${selectedChannel}>`);
+            inputs.push(`#️⃣ *${actionId}*: <#${selectedChannel}>`);
           }
         } else if (action.type === 'conversations_select') {
           const selectedConversation = action.selected_conversation;
           if (selectedConversation) {
-            inputs.push(`**${actionId}** (conversation select): <#${selectedConversation}>`);
+            inputs.push(`💬 *${actionId}*: <#${selectedConversation}>`);
           }
         } else if (action.type === 'checkboxes') {
           const selected = action.selected_options || [];
           const values = selected.map((opt: any) => opt.text?.text || opt.value);
           if (values.length > 0) {
-            inputs.push(`**${actionId}** (checkboxes): ${values.join(', ')}`);
+            inputs.push(`☑️ *${actionId}*: ${values.join(', ')}`);
           }
         } else if (action.type === 'radio_buttons') {
           const selected = action.selected_option;
           if (selected) {
-            inputs.push(`**${actionId}** (radio): ${selected.text?.text || selected.value}`);
+            inputs.push(`🔘 *${actionId}*: ${selected.text?.text || selected.value}`);
           }
         } else if (action.type === 'datepicker') {
           if (action.selected_date) {
-            inputs.push(`**${actionId}** (date): ${action.selected_date}`);
+            inputs.push(`📅 *${actionId}*: ${action.selected_date}`);
           }
         } else if (action.type === 'timepicker') {
           if (action.selected_time) {
-            inputs.push(`**${actionId}** (time): ${action.selected_time}`);
+            inputs.push(`⏰ *${actionId}*: ${action.selected_time}`);
           }
         } else if (action.type === 'number_input') {
           if (action.value !== undefined && action.value !== null) {
-            inputs.push(`**${actionId}** (number): ${action.value}`);
+            inputs.push(`#️⃣ *${actionId}*: ${action.value}`);
           }
         } else if (action.type === 'email_text_input') {
           const value = action.value || '';
           if (value.trim()) {
-            inputs.push(`**${actionId}** (email): ${value}`);
+            inputs.push(`✉️ *${actionId}*: ${value}`);
           }
         } else if (action.type === 'url_text_input') {
           const value = action.value || '';
           if (value.trim()) {
-            inputs.push(`**${actionId}** (url): ${value}`);
+            inputs.push(`🔗 *${actionId}*: ${value}`);
           }
         } else if (action.value) {
           // Generic fallback for any input with a value
-          inputs.push(`**${actionId}** (${action.type}): ${action.value}`);
+          inputs.push(`🧾 *${actionId}*: ${action.value}`);
         }
       }
     }
@@ -1452,24 +1452,58 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
    * Update the app home tab view
    */
   private async updateAppHome(userId: string, client: any): Promise<void> {
+    let githubUsername = 'unknown-user';
+    let repository = null;
+    let errorDetails = null;
+    
     try {
-      // Get user's GitHub username mapping
-      const githubUsername = await this.getOrCreateUserMapping(userId, client);
-      
-      // Get repository information
-      let repository;
-      const cachedRepo = this.repositoryCache.get(githubUsername);
-      if (cachedRepo && Date.now() - cachedRepo.timestamp < this.CACHE_TTL) {
-        repository = cachedRepo.repository;
-      } else {
-        repository = await this.repoManager.ensureUserRepository(githubUsername);
-        this.repositoryCache.set(githubUsername, { repository, timestamp: Date.now() });
+      // Step 1: Get user's GitHub username mapping with fallback
+      try {
+        githubUsername = await this.getOrCreateUserMapping(userId, client);
+        logger.debug(`Got GitHub username mapping: ${githubUsername}`);
+      } catch (mappingError) {
+        logger.warn(`Failed to get user mapping for ${userId}, using fallback:`, mappingError);
+        githubUsername = `user-${userId.substring(0, 8)}`;
+        errorDetails = 'Unable to create GitHub username mapping';
       }
       
-      // Build home tab blocks
-      const blocks = await this.buildHomeTabBlocks(userId, githubUsername, repository, client);
+      // Step 2: Get repository information with fallback
+      try {
+        const cachedRepo = this.repositoryCache.get(githubUsername);
+        if (cachedRepo && Date.now() - cachedRepo.timestamp < this.CACHE_TTL) {
+          repository = cachedRepo.repository;
+          logger.debug(`Using cached repository for ${githubUsername}`);
+        } else {
+          logger.debug(`Ensuring repository exists for ${githubUsername}`);
+          repository = await this.repoManager.ensureUserRepository(githubUsername);
+          this.repositoryCache.set(githubUsername, { repository, timestamp: Date.now() });
+        }
+      } catch (repoError) {
+        logger.warn(`Failed to ensure repository for ${githubUsername}:`, repoError);
+        errorDetails = errorDetails || 'Unable to access GitHub repository';
+        
+        // Create a fallback repository object
+        repository = {
+          username: githubUsername,
+          repositoryName: githubUsername,
+          repositoryUrl: `https://github.com/placeholder/${githubUsername}`,
+          cloneUrl: `https://github.com/placeholder/${githubUsername}.git`,
+          createdAt: Date.now(),
+          lastUsed: Date.now(),
+          isError: true
+        };
+      }
       
-      // Update the app home
+      // Step 3: Build home tab blocks with error handling
+      let blocks;
+      try {
+        blocks = await this.buildHomeTabBlocks(userId, githubUsername, repository, client, errorDetails || undefined);
+      } catch (blocksError) {
+        logger.warn(`Failed to build home tab blocks for ${userId}:`, blocksError);
+        blocks = this.buildFallbackHomeBlocks(githubUsername, errorDetails || 'Unable to load workspace details');
+      }
+      
+      // Step 4: Update the app home
       await client.views.publish({
         user_id: userId,
         view: {
@@ -1478,35 +1512,17 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
         }
       });
       
-      logger.info(`Updated app home for user ${userId} (${githubUsername})`);
+      if (errorDetails) {
+        logger.warn(`Updated app home for user ${userId} (${githubUsername}) with warnings: ${errorDetails}`);
+      } else {
+        logger.info(`Updated app home for user ${userId} (${githubUsername})`);
+      }
       
     } catch (error) {
       logger.error(`Failed to update app home for user ${userId}:`, error);
       
-      // Show error home tab
-      const errorBlocks = [
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: "❌ *Error loading your workspace*\n\nThere was an issue loading your GitHub repository information. Please try again later or contact support."
-          }
-        },
-        {
-          type: "actions",
-          elements: [
-            {
-              type: "button",
-              text: {
-                type: "plain_text",
-                text: "🔄 Retry"
-              },
-              action_id: "refresh_home",
-              style: "primary"
-            }
-          ]
-        }
-      ];
+      // Show comprehensive error home tab
+      const errorBlocks = this.buildErrorHomeBlocks(githubUsername, error);
       
       try {
         await client.views.publish({
@@ -1525,7 +1541,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
   /**
    * Build the blocks for the home tab
    */
-  private async buildHomeTabBlocks(userId: string, githubUsername: string, repository: any, client: any): Promise<any[]> {
+  private async buildHomeTabBlocks(userId: string, githubUsername: string, repository: any, client: any, errorDetails?: string): Promise<any[]> {
     const blocks: any[] = [];
     
     // Welcome header
@@ -1548,12 +1564,34 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
       }
     });
     
+    // Add warning if there are errors
+    if (errorDetails) {
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `⚠️ *Warning:* ${errorDetails}. Some features may be limited.`
+        }
+      });
+    }
+    
     blocks.push({ type: "divider" });
     
     // Current Repository Section
-    const repoDisplayText = repository.isOverride 
-      ? `*📁 Active Repository* (Custom)\n<${repository.repositoryUrl}|${repository.repositoryName}>`
-      : `*📁 Active Repository*\n<${repository.repositoryUrl}|${githubUsername}>`;
+    let repoDisplayText;
+    let repoButtonStyle = "primary";
+    let repoButtonText = "🔧 Override";
+    
+    if (repository.isError) {
+      repoDisplayText = `*📁 Repository Status*\n❌ Unable to access GitHub repository\n_Using fallback configuration_`;
+      repoButtonText = "🔄 Retry Setup";
+    } else if (repository.isOverride) {
+      repoDisplayText = `*📁 Active Repository* (Custom)\n<${repository.repositoryUrl}|${repository.repositoryName}>`;
+      repoButtonText = "🔧 Change";
+      repoButtonStyle = "danger";
+    } else {
+      repoDisplayText = `*📁 Active Repository*\n<${repository.repositoryUrl}|${repository.cloneUrl}>`;
+    }
       
     blocks.push({
       type: "section",
@@ -1565,76 +1603,72 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
         type: "button",
         text: {
           type: "plain_text",
-          text: repository.isOverride ? "🔧 Change" : "🔧 Override"
+          text: repoButtonText
         },
-        action_id: "override_repository",
-        style: repository.isOverride ? "danger" : "primary"
+        action_id: repository.isError ? "refresh_home" : "override_repository",
+        style: repoButtonStyle
       }
     });
     
-    // Repository details with override indicator
-    const contextElements = [
-      {
-        type: "mrkdwn",
-        text: `🌐 Clone URL: \`${repository.cloneUrl}\``
-      }
-    ];
+    // Repository details with status indicator
+    const contextElements = [];
     
-    if (repository.isOverride) {
+    if (repository.isError) {
+      contextElements.push({
+        type: "mrkdwn",
+        text: "⚠️ Repository access error - some features may be limited"
+      });
+    } else if (repository.isOverride) {
       contextElements.push({
         type: "mrkdwn",
         text: "⚠️ Using custom repository override"
       });
     }
     
-    blocks.push({
-      type: "context",
-      elements: contextElements
-    });
+    if (contextElements.length > 0) {
+      blocks.push({
+        type: "context",
+        elements: contextElements
+      });
+    }
     
     blocks.push({ type: "divider" });
-    
-    // Quick Actions Section
-    blocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: "*⚡ Quick Actions*"
-      }
-    });
-    
-    blocks.push({
-      type: "actions",
-      elements: [
-        {
-          type: "button",
-          text: {
-            type: "plain_text",
-            text: "💻 Open in GitHub.dev"
+  
+    // Quick Actions Section - only show if repository is working
+    if (!repository.isError) {
+      blocks.push({
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: "💻 Open in GitHub.dev"
+            },
+            url: repository.repositoryUrl.replace('github.com', 'github.dev'),
+            action_id: "open_github_dev"
           },
-          url: repository.repositoryUrl.replace('github.com', 'github.dev'),
-          action_id: "open_github_dev"
-        },
-        {
-          type: "button",
-          text: {
-            type: "plain_text",
-            text: "🔄 Create Pull Request"
+          {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: "🔄 Create Pull Request"
+            },
+            url: `${repository.repositoryUrl}/compare`,
+            action_id: "create_pr_link"
           },
-          url: `${repository.repositoryUrl}/compare`,
-          action_id: "create_pr_link"
-        },
-        {
-          type: "button",
-          text: {
-            type: "plain_text",
-            text: "📊 Repository Insights"
-          },
-          url: `${repository.repositoryUrl}/pulse`,
-          action_id: "repo_insights"
-        }
-      ]
-    });
+          {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: "📊 Repository Insights"
+            },
+            url: `${repository.repositoryUrl}/pulse`,
+            action_id: "repo_insights"
+          }
+        ]
+      });
+    }
     
     blocks.push({ type: "divider" });
     
@@ -1817,6 +1851,123 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
         logger.error("Failed to send override error DM:", dmError);
       }
     }
+  }
+
+  /**
+   * Build fallback home blocks when repository information is unavailable
+   */
+  private buildFallbackHomeBlocks(githubUsername: string, errorMessage: string): any[] {
+    return [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: `👋 Welcome, ${githubUsername}!`
+        }
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: "⚠️ *Workspace Partially Available*\n\nYour Claude Code workspace is loading with limited information. You can still start coding sessions, but some features may be restricted."
+        }
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Issue:* ${errorMessage}`
+        }
+      },
+      {
+        type: "divider"
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: "*🚀 Getting Started*\n\nTo start a coding session:\n• Send a direct message to this bot\n• Each thread becomes a persistent conversation\n• All changes are automatically committed"
+        }
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: "🔄 Retry Loading"
+            },
+            action_id: "refresh_home",
+            style: "primary"
+          }
+        ]
+      }
+    ];
+  }
+
+  /**
+   * Build comprehensive error home blocks
+   */
+  private buildErrorHomeBlocks(githubUsername: string, error: any): any[] {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+    
+    return [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: "⚠️ Workspace Error"
+        }
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: "❌ *Error loading your workspace*\n\nThere was an issue setting up your Claude Code workspace. This is usually temporary."
+        }
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*User:* ${githubUsername}\n*Error:* ${errorMessage}`
+        }
+      },
+      {
+        type: "divider"
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: "*🔧 Troubleshooting Steps:*\n• Check your GitHub access permissions\n• Verify GitHub token is valid\n• Try refreshing in a few minutes\n• Contact support if the issue persists"
+        }
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: "🔄 Retry"
+            },
+            action_id: "refresh_home",
+            style: "primary"
+          }
+        ]
+      },
+      {
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: "If this error persists, please check the system logs or contact support."
+          }
+        ]
+      }
+    ];
   }
 
   /**

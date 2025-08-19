@@ -110,7 +110,7 @@ async function checkForReaction(channel, timestamp, reactionName, timeout = 3000
   return false;
 }
 
-async function runTest() {
+async function runTest(prompt) {
   console.log('🧪 Peerbot Test');
   console.log('📤 Sending as: PeerQA');
   console.log('🎯 Target: @peercloud (U097WU1GMLJ)\n');
@@ -120,7 +120,7 @@ async function runTest() {
   try {
     // Send test message
     console.log('📨 Sending test message...');
-    const message = '<@U097WU1GMLJ> Create me a new project for my landing page of a Pet Store to Cloudflare?'; // Mention PeerCloud
+    const message = `<@U097WU1GMLJ> ${prompt}`;
     const msg = await makeSlackRequest('chat.postMessage', {
       channel: targetChannel,
       text: message
@@ -171,4 +171,6 @@ async function runTest() {
 }
 
 // Run the test
-runTest();
+runTest('Create me a new project for my landing page of a Pet Store? It\' is a fictionary app so be creating don\'t ask me. Project name is "Pet Store {timestamp}"');
+runTest('Create a button to add a new pet to the pet store');
+runTest("Create 5 tasks which will each return a random number and then you will sum all them.")
