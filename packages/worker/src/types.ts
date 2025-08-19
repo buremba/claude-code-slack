@@ -14,6 +14,8 @@ export interface WorkerConfig {
   slackResponseTs: string;
   claudeOptions: string; // JSON string
   conversationHistory?: string; // JSON string
+  mode?: 'oneshot' | 'persistent'; // Worker mode
+  httpPort?: number; // Port for HTTP server in persistent mode
   slack: {
     token: string;
     refreshToken?: string;
@@ -24,6 +26,12 @@ export interface WorkerConfig {
     baseDirectory: string;
     githubToken: string;
   };
+}
+
+export interface TaskRequest {
+  userRequest: string;
+  conversationHistory: Array<{ role: string; content: string; timestamp: number }>;
+  sessionKey: string;
 }
 
 export interface WorkspaceSetupConfig {

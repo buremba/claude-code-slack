@@ -5,7 +5,8 @@ import { WorkspaceManager } from "./workspace-setup";
 import { SlackIntegration } from "./slack-integration";
 import { SlackTokenManager } from "./slack/token-manager";
 import { extractFinalResponse } from "./claude-output-parser";
-import type { WorkerConfig } from "./types";
+import { WorkerHttpServer } from "./http-server";
+import type { WorkerConfig, TaskRequest } from "./types";
 import logger from "./logger";
 
 export class ClaudeWorker {
@@ -15,6 +16,10 @@ export class ClaudeWorker {
   private config: WorkerConfig;
   private tokenManager?: SlackTokenManager;
   private autoPushInterval?: NodeJS.Timeout;
+  private httpServer?: WorkerHttpServer;
+  private idleTimeout?: NodeJS.Timeout;
+  private isIdle = false;
+  private isShuttingDown = false;
 
   constructor(config: WorkerConfig) {
     this.config = config;
@@ -100,6 +105,171 @@ export class ClaudeWorker {
   }
 
   /**
+   * Start persistent mode with HTTP server
+   */
+  private async startPersistentMode(): Promise<void> {
+    logger.info("Starting persistent mode...");
+    
+    this.httpServer = new WorkerHttpServer(this.config.httpPort || 8080);
+    
+    await this.httpServer.start(async (task: TaskRequest) => {
+      await this.handleTaskRequest(task);
+    });
+    
+    // Start idle timeout
+    this.startIdleTimeout();
+    
+    logger.info("Persistent mode started, waiting for tasks...");
+  }
+
+  /**
+   * Handle task request in persistent mode
+   */
+  private async handleTaskRequest(task: TaskRequest): Promise<void> {
+    try {
+      logger.info(`Received task for session ${task.sessionKey}`);
+      
+      // Reset idle timeout
+      this.resetIdleTimeout();
+      this.isIdle = false;
+      
+      // Store conversation history files locally
+      await this.storeConversationHistory(task.sessionKey, task.conversationHistory);
+      
+      // Execute the task
+      await this.executeTask(task.userRequest, task.conversationHistory);
+      
+      // Mark as idle and start timeout
+      this.isIdle = true;
+      this.startIdleTimeout();
+      
+    } catch (error) {
+      logger.error("Error handling task request:", error);
+      this.isIdle = true;
+      this.startIdleTimeout();
+    }
+  }
+
+  /**
+   * Store conversation history to local files
+   */
+  private async storeConversationHistory(sessionKey: string, conversationHistory: Array<{ role: string; content: string; timestamp: number }>): Promise<void> {
+    try {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      
+      // Create .claude/projects directory structure
+      const projectsDir = path.join(process.cwd(), '.claude', 'projects', sessionKey);
+      await fs.mkdir(projectsDir, { recursive: true });
+      
+      // Store each message as a JSONL entry
+      const historyFile = path.join(projectsDir, 'conversation.jsonl');
+      const jsonlContent = conversationHistory
+        .map(msg => JSON.stringify(msg))
+        .join('\n') + '\n';
+      
+      await fs.writeFile(historyFile, jsonlContent);
+      
+      logger.info(`Stored ${conversationHistory.length} messages to ${historyFile}`);
+    } catch (error) {
+      logger.error("Failed to store conversation history:", error);
+    }
+  }
+
+  /**
+   * Execute a single task
+   */
+  private async executeTask(userPrompt: string, conversationHistory: Array<{ role: string; content: string; timestamp: number }>): Promise<void> {
+    // Similar to the main execute method but without persistence setup
+    const sessionContext = {
+      platform: "slack" as const,
+      channelId: this.config.channelId,
+      userId: this.config.userId,
+      userDisplayName: this.config.username,
+      threadTs: this.config.threadTs,
+      messageTs: this.config.slackResponseTs,
+      repositoryUrl: this.config.repositoryUrl,
+      workingDirectory: `/workspace/${this.config.username}`,
+      customInstructions: this.generateCustomInstructions(),
+      conversationHistory,
+    };
+
+    const result = await this.sessionRunner.executeSession({
+      sessionKey: this.config.sessionKey,
+      userPrompt,
+      context: sessionContext,
+      options: JSON.parse(this.config.claudeOptions),
+      onProgress: async (update) => {
+        if (update.type === "output" && update.data) {
+          await this.slackIntegration.streamProgress(update.data);
+        }
+      },
+    });
+
+    // Handle result
+    if (result.success) {
+      const claudeResponse = this.formatClaudeResponse(result.output);
+      if (claudeResponse) {
+        await this.slackIntegration.updateProgress(claudeResponse);
+      } else {
+        await this.slackIntegration.updateProgress("✅ Completed");
+      }
+    } else {
+      const errorMsg = result.error || "Unknown error";
+      await this.slackIntegration.updateProgress(`❌ Task failed: ${errorMsg}`);
+    }
+  }
+
+  /**
+   * Start idle timeout
+   */
+  private startIdleTimeout(): void {
+    this.resetIdleTimeout();
+    
+    this.idleTimeout = setTimeout(() => {
+      logger.info("Worker idle timeout reached, shutting down...");
+      this.shutdown();
+    }, 5 * 60 * 1000); // 5 minutes
+    
+    logger.info("Started 5-minute idle timeout");
+  }
+
+  /**
+   * Reset idle timeout
+   */
+  private resetIdleTimeout(): void {
+    if (this.idleTimeout) {
+      clearTimeout(this.idleTimeout);
+      this.idleTimeout = undefined;
+    }
+  }
+
+  /**
+   * Shutdown worker gracefully
+   */
+  private async shutdown(): Promise<void> {
+    if (this.isShuttingDown) return;
+    
+    this.isShuttingDown = true;
+    logger.info("Shutting down worker...");
+    
+    // Clear timeouts
+    this.resetIdleTimeout();
+    this.stopAutoPush();
+    
+    // Stop HTTP server
+    if (this.httpServer) {
+      await this.httpServer.stop();
+    }
+    
+    // Final cleanup
+    await this.cleanup();
+    
+    logger.info("Worker shutdown complete");
+    process.exit(0);
+  }
+
+  /**
    * Execute the worker job
    */
   async execute(): Promise<void> {
@@ -110,7 +280,23 @@ export class ClaudeWorker {
     try {
       logger.info(`🚀 Starting Claude worker for session: ${this.config.sessionKey}`);
       logger.info(`[TIMING] Worker execute() started at: ${new Date(executeStartTime).toISOString()}`);
+      logger.info(`Worker mode: ${this.config.mode || 'oneshot'}`);
       
+      // Check if this should be a persistent worker
+      if (this.config.mode === 'persistent') {
+        logger.info("Starting in persistent mode...");
+        
+        // Do minimal setup for persistent mode
+        await this.setupMinimalWorkspace();
+        
+        // Start persistent mode with HTTP server
+        await this.startPersistentMode();
+        
+        // Keep the process alive
+        return;
+      }
+      
+      // Original oneshot mode execution
       // Add "gear" reaction to indicate worker is running
       if (originalMessageTs) {
         logger.info(`Adding gear reaction to message ${originalMessageTs}`);
@@ -355,6 +541,35 @@ export class ClaudeWorker {
   }
 
   /**
+   * Setup minimal workspace for persistent mode
+   */
+  private async setupMinimalWorkspace(): Promise<void> {
+    try {
+      // Create workspace directory
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const workspaceDir = path.join('/workspace', this.config.username);
+      await fs.mkdir(workspaceDir, { recursive: true });
+      process.chdir(workspaceDir);
+      
+      // Minimal workspace setup - just clone the repo if needed
+      if (!await this.workspaceManager.checkIfRepositoryExists()) {
+        await this.workspaceManager.setupWorkspace(
+          this.config.repositoryUrl,
+          this.config.username,
+          this.config.sessionKey
+        );
+        await this.workspaceManager.createSessionBranch(this.config.sessionKey);
+      }
+      
+      logger.info("Minimal workspace setup completed");
+    } catch (error) {
+      logger.error("Failed to setup minimal workspace:", error);
+      throw error;
+    }
+  }
+
+  /**
    * Generate custom instructions for Claude
    */
   private generateCustomInstructions(): string {
@@ -471,6 +686,8 @@ async function main() {
       slackResponseTs: process.env.SLACK_RESPONSE_TS!,
       claudeOptions: process.env.CLAUDE_OPTIONS!,
       conversationHistory: process.env.CONVERSATION_HISTORY,
+      mode: (process.env.WORKER_MODE as 'oneshot' | 'persistent') || 'oneshot',
+      httpPort: process.env.HTTP_PORT ? parseInt(process.env.HTTP_PORT) : 8080,
       slack: {
         token: process.env.SLACK_BOT_TOKEN!,
         refreshToken: process.env.SLACK_REFRESH_TOKEN,

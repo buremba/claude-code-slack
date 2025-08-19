@@ -350,16 +350,27 @@ export class SlackEventHandlers {
 
     logger.info(`Handling request for session: ${sessionKey}`);
 
-    // Check if session is already active
+    // Check if session is already active - queue message instead of blocking
     const existingSession = this.activeSessions.get(sessionKey);
     if (existingSession && existingSession.status === "running") {
-      await client.chat.postMessage({
-        channel: context.channelId,
-        thread_ts: context.threadTs,
-        text: "⏳ I'm already working on this thread. Please wait for the current task to complete.",
-        mrkdwn: true,
+      // Queue the message for processing by existing worker
+      const queued = await this.jobManager.queueMessageForSession(sessionKey, {
+        userRequest,
+        context,
+        conversationHistory: await this.fetchConversationHistory(context.channelId, context.threadTs, client)
       });
-      return;
+      
+      if (queued) {
+        await client.chat.postMessage({
+          channel: context.channelId,
+          thread_ts: context.threadTs,
+          text: "📝 Message queued. Worker will process it shortly...",
+          mrkdwn: true,
+        });
+        return;
+      }
+      
+      // If queueing failed, fall through to create new worker
     }
 
     try {

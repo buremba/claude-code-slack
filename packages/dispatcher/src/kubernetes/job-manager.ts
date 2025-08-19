@@ -5,7 +5,8 @@ import logger from "../logger";
 import type { 
   KubernetesConfig,
   WorkerJobRequest,
-  JobTemplateData
+  JobTemplateData,
+  QueuedMessage
 } from "../types";
 import { KubernetesError } from "../types";
 
@@ -20,6 +21,8 @@ export class KubernetesJobManager {
   private activeJobs = new Map<string, string>(); // sessionKey -> jobName
   private rateLimitMap = new Map<string, RateLimitEntry>(); // userId -> rate limit data
   private config: KubernetesConfig;
+  private messageQueues = new Map<string, QueuedMessage[]>(); // sessionKey -> queued messages
+  private workerTimeouts = new Map<string, NodeJS.Timeout>(); // sessionKey -> timeout
   
   // Rate limiting configuration
   private readonly RATE_LIMIT_MAX_JOBS = process.env.DISABLE_RATE_LIMIT === 'true' ? 999 : 5; // Max jobs per user per window
@@ -209,6 +212,167 @@ export class KubernetesJobManager {
   }
 
   /**
+   * Queue a message for an existing persistent worker
+   */
+  async queueMessageForSession(sessionKey: string, message: Omit<QueuedMessage, 'queuedAt'>): Promise<boolean> {
+    try {
+      // Check if we have an active worker for this session
+      const jobName = this.activeJobs.get(sessionKey);
+      if (!jobName) {
+        logger.info(`No active worker found for session ${sessionKey}`);
+        return false;
+      }
+
+      // Get or create queue for this session
+      if (!this.messageQueues.has(sessionKey)) {
+        this.messageQueues.set(sessionKey, []);
+      }
+
+      const queue = this.messageQueues.get(sessionKey)!;
+      queue.push({
+        ...message,
+        queuedAt: Date.now()
+      });
+
+      logger.info(`Queued message for session ${sessionKey}. Queue length: ${queue.length}`);
+
+      // Try to send to worker if it has an HTTP endpoint
+      const workerEndpoint = await this.getWorkerEndpoint(sessionKey);
+      if (workerEndpoint) {
+        await this.sendTaskToWorker(workerEndpoint, {
+          userRequest: message.userRequest,
+          conversationHistory: message.conversationHistory,
+          sessionKey
+        });
+        
+        // Remove from queue since it was sent successfully
+        queue.shift();
+        
+        // Reset worker timeout
+        this.resetWorkerTimeout(sessionKey);
+        
+        logger.info(`Sent queued message to worker ${workerEndpoint}`);
+        return true;
+      }
+
+      return true; // Queued successfully, even if we can't send immediately
+    } catch (error) {
+      logger.error(`Failed to queue message for session ${sessionKey}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Get worker HTTP endpoint for a session
+   */
+  private async getWorkerEndpoint(sessionKey: string): Promise<string | null> {
+    try {
+      const jobName = this.activeJobs.get(sessionKey);
+      if (!jobName) return null;
+
+      // Find pod for this job
+      const podsResponse = await this.k8sCoreApi.listNamespacedPod({
+        namespace: this.config.namespace,
+        labelSelector: `job-name=${jobName}`
+      });
+
+      const pod = podsResponse.items[0];
+      if (!pod?.metadata?.name || pod.status?.phase !== 'Running') {
+        return null;
+      }
+
+      // Return the HTTP endpoint (assuming port 8080)
+      return `http://${pod.status.podIP}:8080`;
+    } catch (error) {
+      logger.error(`Failed to get worker endpoint for session ${sessionKey}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Send task to existing worker via HTTP
+   */
+  private async sendTaskToWorker(endpoint: string, task: any): Promise<void> {
+    try {
+      const response = await fetch(`${endpoint}/task`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(task)
+      });
+
+      if (!response.ok) {
+        throw new Error(`Worker responded with ${response.status}: ${response.statusText}`);
+      }
+
+      logger.info(`Successfully sent task to worker at ${endpoint}`);
+    } catch (error) {
+      logger.error(`Failed to send task to worker at ${endpoint}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Start 5-minute timeout for worker
+   */
+  private startWorkerTimeout(sessionKey: string): void {
+    this.resetWorkerTimeout(sessionKey);
+
+    const timeout = setTimeout(() => {
+      this.cleanupWorker(sessionKey);
+    }, 5 * 60 * 1000); // 5 minutes
+
+    this.workerTimeouts.set(sessionKey, timeout);
+    logger.info(`Started 5-minute timeout for session ${sessionKey}`);
+  }
+
+  /**
+   * Reset worker timeout
+   */
+  private resetWorkerTimeout(sessionKey: string): void {
+    const existingTimeout = this.workerTimeouts.get(sessionKey);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+    }
+
+    const timeout = setTimeout(() => {
+      this.cleanupWorker(sessionKey);
+    }, 5 * 60 * 1000); // 5 minutes
+
+    this.workerTimeouts.set(sessionKey, timeout);
+    logger.info(`Reset 5-minute timeout for session ${sessionKey}`);
+  }
+
+  /**
+   * Cleanup worker and related resources
+   */
+  private async cleanupWorker(sessionKey: string): Promise<void> {
+    try {
+      logger.info(`Cleaning up worker for session ${sessionKey}`);
+
+      // Clear timeout
+      const timeout = this.workerTimeouts.get(sessionKey);
+      if (timeout) {
+        clearTimeout(timeout);
+        this.workerTimeouts.delete(sessionKey);
+      }
+
+      // Clear message queue
+      this.messageQueues.delete(sessionKey);
+
+      // Delete the job/deployment
+      const jobName = this.activeJobs.get(sessionKey);
+      if (jobName) {
+        await this.deleteJob(jobName);
+        this.activeJobs.delete(sessionKey);
+      }
+
+      logger.info(`Worker cleanup completed for session ${sessionKey}`);
+    } catch (error) {
+      logger.error(`Failed to cleanup worker for session ${sessionKey}:`, error);
+    }
+  }
+
+  /**
    * Create a worker job for the user request
    */
   async createWorkerJob(request: WorkerJobRequest): Promise<string> {
@@ -241,8 +405,11 @@ export class KubernetesJobManager {
         return existingJob;
       }
 
+      // Check if this should be a persistent worker (thread exists)
+      const isPersistent = !!request.threadTs;
+      
       // Create job manifest
-      const jobManifest = this.createJobManifest(jobName, request);
+      const jobManifest = this.createJobManifest(jobName, request, isPersistent);
 
       // Create the job
       await this.k8sApi.createNamespacedJob({
@@ -252,6 +419,11 @@ export class KubernetesJobManager {
       
       // Track the job
       this.activeJobs.set(request.sessionKey, jobName);
+      
+      // If persistent, start worker timeout
+      if (isPersistent) {
+        this.startWorkerTimeout(request.sessionKey);
+      }
       
       logger.info(`Created Kubernetes job: ${jobName} for session ${request.sessionKey}`);
       
@@ -287,7 +459,7 @@ export class KubernetesJobManager {
   /**
    * Create Kubernetes Job manifest
    */
-  private createJobManifest(jobName: string, request: WorkerJobRequest): k8s.V1Job {
+  private createJobManifest(jobName: string, request: WorkerJobRequest, isPersistent: boolean = false): k8s.V1Job {
     const templateData: JobTemplateData = {
       jobName,
       namespace: this.config.namespace,
@@ -358,6 +530,14 @@ export class KubernetesJobManager {
                 name: "claude-worker",
                 image: this.config.workerImage,
                 imagePullPolicy: process.env.NODE_ENV === 'production' ? "Always" : "IfNotPresent",
+                ...(isPersistent ? {
+                  ports: [
+                    {
+                      containerPort: 8080,
+                      protocol: "TCP"
+                    }
+                  ]
+                } : {}),
                 resources: {
                   requests: {
                     cpu: this.config.cpu,
@@ -394,9 +574,24 @@ export class KubernetesJobManager {
                     value: templateData.repositoryUrl,
                   },
                   {
-                    name: "USER_PROMPT",
-                    value: templateData.userPrompt,
+                    name: "WORKER_MODE",
+                    value: isPersistent ? "persistent" : "oneshot",
                   },
+                  {
+                    name: "HTTP_PORT",
+                    value: "8080",
+                  },
+                  // Only include USER_PROMPT and CONVERSATION_HISTORY for oneshot mode
+                  ...(isPersistent ? [] : [
+                    {
+                      name: "USER_PROMPT",
+                      value: templateData.userPrompt,
+                    },
+                    {
+                      name: "CONVERSATION_HISTORY",
+                      value: templateData.conversationHistory,
+                    }
+                  ]),
                   {
                     name: "SLACK_RESPONSE_CHANNEL",
                     value: templateData.slackResponseChannel,
@@ -412,10 +607,6 @@ export class KubernetesJobManager {
                   {
                     name: "CLAUDE_OPTIONS",
                     value: templateData.claudeOptions,
-                  },
-                  {
-                    name: "CONVERSATION_HISTORY",
-                    value: templateData.conversationHistory,
                   },
                   // Worker needs Slack token to send progress updates
                   {

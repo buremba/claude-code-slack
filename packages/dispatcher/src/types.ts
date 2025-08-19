@@ -80,6 +80,15 @@ export interface ThreadSession {
   lastActivity: number;
   status: "pending" | "starting" | "running" | "completed" | "error" | "timeout";
   createdAt: number;
+  workerEndpoint?: string; // HTTP endpoint for persistent workers
+  isPersistent?: boolean; // Whether this worker is persistent
+}
+
+export interface QueuedMessage {
+  userRequest: string;
+  context: SlackContext;
+  conversationHistory: Array<{ role: string; content: string; timestamp: number }>;
+  queuedAt: number;
 }
 
 export interface UserRepository {
