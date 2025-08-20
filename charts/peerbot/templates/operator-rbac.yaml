@@ -1,0 +1,77 @@
+{{- if and .Values.operator.enabled .Values.rbac.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "peerbot.serviceAccountName" . }}-operator
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: true
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "peerbot.fullname" . }}-operator
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+rules:
+# Claude Operator needs to manage ClaudeSession CRDs
+- apiGroups: ["claude.ai"]
+  resources: ["claudesessions"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["claude.ai"]
+  resources: ["claudesessions/status"]
+  verbs: ["get", "update", "patch"]
+- apiGroups: ["claude.ai"]
+  resources: ["claudesessions/finalizers"]
+  verbs: ["update"]
+
+# Need to manage Jobs that are created from ClaudeSessions
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Need to watch pods to get job status
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+
+# Need to get pod logs
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+
+# Need to create events for observability
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+
+# Need to read ConfigMaps and Secrets (if needed for configuration)
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "peerbot.fullname" . }}-operator
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "peerbot.fullname" . }}-operator
+subjects:
+- kind: ServiceAccount
+  name: {{ include "peerbot.serviceAccountName" . }}-operator
+  namespace: {{ .Release.Namespace }}
+{{- end }}

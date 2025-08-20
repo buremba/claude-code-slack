@@ -5,7 +5,8 @@ import logger from "../logger";
 import type { 
   KubernetesConfig,
   WorkerJobRequest,
-  JobTemplateData
+  JobTemplateData,
+  JobManager
 } from "../types";
 import { KubernetesError } from "../types";
 
@@ -14,7 +15,7 @@ interface RateLimitEntry {
   windowStart: number;
 }
 
-export class KubernetesJobManager {
+export class KubernetesJobManager implements JobManager {
   private k8sApi: k8s.BatchV1Api;
   private k8sCoreApi: k8s.CoreV1Api;
   private activeJobs = new Map<string, string>(); // sessionKey -> jobName

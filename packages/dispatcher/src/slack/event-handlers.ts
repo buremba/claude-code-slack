@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 
 import type { App } from "@slack/bolt";
-import type { KubernetesJobManager } from "../kubernetes/job-manager";
 import type { GitHubRepositoryManager } from "../github/repository-manager";
 import type { 
   DispatcherConfig, 
   SlackContext, 
   ThreadSession,
-  WorkerJobRequest
+  WorkerJobRequest,
+  JobManager
 } from "../types";
 import { SessionManager } from "@claude-code-slack/core-runner";
 import logger from "../logger";
@@ -23,7 +23,7 @@ export class SlackEventHandlers {
 
   constructor(
     private app: App,
-    private jobManager: KubernetesJobManager,
+    private jobManager: JobManager,
     private repoManager: GitHubRepositoryManager,
     private config: DispatcherConfig
   ) {

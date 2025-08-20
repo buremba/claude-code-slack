@@ -9,6 +9,7 @@ global:
 # Dispatcher (Slack event handler) configuration
 dispatcher:
   replicaCount: 1
+  useOperator: false  # Set to true to use Claude Operator instead of direct job management (recommended)
   
   image:
     repository: peerbot-dispatcher
@@ -152,6 +153,45 @@ ingress:
         - path: /
           pathType: Prefix
   tls: []
+
+# Claude Operator configuration
+operator:
+  enabled: false  # Enable to use Claude Operator for session management
+  
+  image:
+    repository: claude-operator
+    tag: latest
+    pullPolicy: Always
+  
+  replicaCount: 1
+  
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  
+  # Health checks
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 8081
+    initialDelaySeconds: 30
+    periodSeconds: 30
+  
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: 8081
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  
+  # Environment-specific configuration
+  config:
+    logLevel: INFO
+    namespace: ""  # Defaults to chart namespace
 
 # Monitoring and observability
 monitoring:

@@ -12,6 +12,10 @@ build:
     context: .
     docker:
       dockerfile: Dockerfile.worker
+  - image: claude-operator
+    context: .
+    docker:
+      dockerfile: Dockerfile.operator
   local:
     push: false
     useBuildkit: true
@@ -24,17 +28,21 @@ deploy:
       createNamespace: true
       skipBuildDependencies: true
       valuesFiles:
-      - charts/peerbot/values-local.yaml
+      - charts/peerbot/values-dev.yaml
       setValueTemplates:
         dispatcher.image.repository: peerbot-dispatcher
         dispatcher.image.tag: "{{.IMAGE_TAG_peerbot_dispatcher}}"
         worker.image.repository: claude-worker
         worker.image.tag: "{{.IMAGE_TAG_claude_worker}}"
+        operator.image.repository: claude-operator
+        operator.image.tag: "{{.IMAGE_TAG_claude_operator}}"
       setValues:
         dispatcher.socketMode: "true"
         dispatcher.httpMode: "false"
         ingress.enabled: "false"
         service.type: ClusterIP
+        operator.enabled: "true"
+        dispatcher.useOperator: "true"
 portForward:
 - resourceType: deployment
   resourceName: peerbot-dispatcher

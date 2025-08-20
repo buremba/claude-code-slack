@@ -69,6 +69,18 @@ export interface WorkerJobRequest {
   resumeSessionId?: string; // Claude session ID to resume from
 }
 
+// Common interface for job/session managers
+export interface JobManager {
+  createWorkerJob(request: WorkerJobRequest): Promise<string>;
+  getJobStatus(jobName: string): Promise<string>;
+  getJobForSession(sessionKey: string): Promise<string | null>;
+  getJobLogs(jobName: string): Promise<string | null>;
+  deleteJob(jobName: string): Promise<void>;
+  listActiveJobs(): Promise<Array<{ name: string; sessionKey: string; status: string }>>;
+  getActiveJobCount(): number;
+  cleanup(): Promise<void>;
+}
+
 export interface ThreadSession {
   sessionKey: string;
   threadTs?: string;

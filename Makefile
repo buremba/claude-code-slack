@@ -5,19 +5,20 @@
 # Default target
 help:
 	@echo "Available commands:"
-	@echo "  make dev       - Start Skaffold in dev mode with auto-rebuild"
-	@echo "  make build     - Build TypeScript and Docker image"
-	@echo "  make compile   - Compile TypeScript only"
-	@echo "  make test      - Run test bot"
-	@echo "  make logs      - Show dispatcher logs"
-	@echo "  make restart   - Restart the deployment"
-	@echo "  make clean     - Stop Skaffold and clean up resources"
+	@echo "  make dev              - Start Skaffold in dev mode (uses Claude Operator by default)"
+	@echo "  make build            - Build TypeScript and Docker image"
+	@echo "  make compile          - Compile TypeScript only"
+	@echo "  make test             - Run test bot"
+	@echo "  make logs             - Show dispatcher logs"
+	@echo "  make restart          - Restart the deployment"
+	@echo "  make clean            - Stop Skaffold and clean up resources"
 
 # Compile TypeScript
 compile:
 	@echo "📦 Compiling TypeScript..."
 	@cd packages/dispatcher && bun run build.ts
 	@cd packages/core-runner && bun run build
+	@cd packages/operator && bun run build
 	@echo "✅ TypeScript compilation complete"
 
 # Build Docker image after compiling
@@ -87,3 +88,4 @@ secrets:
 		--namespace=peerbot \
 		--dry-run=client -o yaml | kubectl apply -f -
 	@echo "✅ Secrets updated"
+
