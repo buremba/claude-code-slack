@@ -78,6 +78,12 @@ worker:
   # Workspace configuration
   workspace:
     sizeLimit: 10Gi
+    
+  # Persistent storage configuration
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""  # Use default storage class
 
 # Slack configuration
 slack:

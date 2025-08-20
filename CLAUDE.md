@@ -28,13 +28,11 @@ The bot updates automatically when running `make dev` - no manual steps needed!
 - Rate limiting is disabled in local development (dispatcher.disableRateLimit: true in values-local.yaml)
 - To manually rebuild worker image if needed: `docker build -f Dockerfile.worker -t claude-worker:latest .`
 
-## Conversation Persistence
+## Persistent Storage
 
-The Slack bot automatically persists conversations using Claude CLI's session management:
+Worker pods now use persistent volumes for data storage:
 
-1. **Automatic Session Management**: Each Slack thread gets its own Claude session ID for conversation continuity
-2. **Syncing Projects**: Use `./scripts/sync-claude-projects.sh` to copy Claude projects from host `~/.claude/projects/[dir]` to repository `.claude/projects/[relativedir]`
-3. **Container Setup**: The worker container automatically extracts `.claude/projects` data to `~/.claude/projects` with absolute paths
-4. **Auto-Resume**: The worker automatically resumes conversations using Claude CLI's built-in `--resume` functionality when continuing a thread
-5. **Git Commits**: When creating PRs, conversations are preserved in the `.claude/projects` directory for future reference
+1. **Persistent Volumes**: Each worker pod mounts a persistent volume at `/workspace` to preserve data across pod restarts
+2. **Auto-Resume**: The worker automatically resumes conversations using Claude CLI's built-in `--resume` functionality when continuing a thread in the same persistent volume
+3. **Data Persistence**: All workspace data is preserved in the persistent volume, eliminating the need for conversation file syncing
    

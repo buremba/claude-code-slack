@@ -152,116 +152,6 @@ export class ClaudeWorker {
   }
 
 
-  /**
-   * Save Claude session ID mapping for thread
-   */
-  private async saveSessionMapping(claudeSessionId: string): Promise<void> {
-    try {
-      const fs = await import('fs').then(m => m.promises);
-      const path = await import('path');
-      
-      const sessionDir = path.join('/workspace', this.config.username, '.claude', 'projects', this.config.username);
-      await fs.mkdir(sessionDir, { recursive: true });
-      
-      const mappingFile = path.join(sessionDir, `${this.config.sessionKey}.mapping`);
-      await fs.writeFile(mappingFile, claudeSessionId, 'utf8');
-      
-      logger.info(`Saved session mapping: ${this.config.sessionKey} -> ${claudeSessionId}`);
-    } catch (error) {
-      logger.error(`Failed to save session mapping for ${this.config.sessionKey}:`, error);
-    }
-  }
-
-  /**
-   * Sync conversation files - copy the current session's JSONL file from ~/.claude/projects
-   */
-  private async syncConversationFiles(): Promise<void> {
-    try {
-      const fs = await import('fs').then(m => m.promises);
-      const path = await import('path');
-      
-      logger.info("Syncing conversation file for current session...");
-      
-      // Get the session ID from the Claude execution logs
-      // We need to find the session ID that was created for this execution
-      const logPath = `${process.env.RUNNER_TEMP || "/tmp"}/claude-execution-output.json`;
-      let sessionId: string | null = null;
-      
-      try {
-        const logContent = await fs.readFile(logPath, 'utf-8');
-        const lines = logContent.split('\n').filter(line => line.trim());
-        
-        // Look for the session_id in the log entries
-        for (const line of lines) {
-          try {
-            const entry = JSON.parse(line);
-            if (entry.session_id) {
-              sessionId = entry.session_id;
-              break;
-            }
-          } catch {
-            // Skip invalid JSON lines
-          }
-        }
-      } catch (logError) {
-        logger.warn("Could not read Claude execution log:", logError);
-      }
-      
-      if (!sessionId) {
-        logger.warn("Could not find session ID, skipping conversation sync");
-        return;
-      }
-      
-      logger.info(`Found session ID: ${sessionId}`);
-      
-      // Save session mapping for future resumption
-      await this.saveSessionMapping(sessionId);
-      
-      // Paths for the conversation file
-      const homeClaudeDir = '/home/claude/.claude/projects';
-      const workspaceDir = `/workspace/${this.config.username}`;
-      const workspaceName = this.config.username;
-      const sessionFile = `${sessionId}.jsonl`;
-      
-      const srcPath = path.join(homeClaudeDir, workspaceName, sessionFile);
-      const destDir = path.join(workspaceDir, '.claude', 'projects');
-      const destPath = path.join(destDir, sessionFile);
-      
-      logger.info(`Copying conversation file from ${srcPath} to ${destPath}`);
-      
-      // Check if source file exists
-      try {
-        await fs.access(srcPath);
-      } catch {
-        logger.info(`No conversation file found at ${srcPath}`);
-        return;
-      }
-      
-      // Ensure destination directory exists
-      await fs.mkdir(destDir, { recursive: true });
-      
-      // Copy the conversation file
-      await fs.copyFile(srcPath, destPath);
-      logger.info(`Successfully synced conversation file: ${sessionFile}`);
-      
-      // Commit the conversation file
-      try {
-        const status = await this.workspaceManager.getRepositoryStatus();
-        if (status.hasChanges) {
-          await this.workspaceManager.commitAndPush(
-            `Save conversation: ${sessionFile}`
-          );
-          logger.info(`Committed conversation file to repository`);
-        }
-      } catch (error) {
-        logger.warn("Failed to commit conversation file:", error);
-      }
-      
-    } catch (error) {
-      logger.error("Error syncing conversation files:", error);
-      throw error;
-    }
-  }
 
   /**
    * Execute the worker job
@@ -430,12 +320,6 @@ export class ClaudeWorker {
         logger.warn("Final push failed:", pushError);
       }
 
-      // Sync conversation files back to repository
-      try {
-        await this.syncConversationFiles();
-      } catch (syncError) {
-        logger.warn("Conversation file sync failed:", syncError);
-      }
       
       if (result.success) {
         logger.info("Calling slackIntegration.updateProgress...");
@@ -489,12 +373,6 @@ export class ClaudeWorker {
         logger.warn("Error push failed:", pushError);
       }
       
-      // Sync conversation files even on error
-      try {
-        await this.syncConversationFiles();
-      } catch (syncError) {
-        logger.warn("Error conversation file sync failed:", syncError);
-      }
       
       // Update Slack with error
       await this.slackIntegration.updateProgress(

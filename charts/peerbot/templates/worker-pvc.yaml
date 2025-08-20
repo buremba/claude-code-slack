@@ -1,0 +1,18 @@
+{{- if .Values.worker.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "peerbot.fullname" . }}-worker-pvc
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.worker.persistence.size }}
+  {{- if .Values.worker.persistence.storageClass }}
+  storageClassName: {{ .Values.worker.persistence.storageClass }}
+  {{- end }}
+{{- end }}
