@@ -116,6 +116,15 @@ spec:
                   name: {{ include "peerbot.fullname" . }}-config
                   key: github-organization
             
+            {{- if .Values.postgresql.enabled }}
+            # PostgreSQL database configuration
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "peerbot.fullname" . }}-secrets
+                  key: database-url
+            {{- end }}
+            
 
             - name: GOOGLE_CLOUD_PROJECT
               valueFrom:

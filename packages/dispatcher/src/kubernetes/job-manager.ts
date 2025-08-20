@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import * as k8s from "@kubernetes/client-node";
+import { Client } from "pg";
 import logger from "../logger";
 import type { 
   KubernetesConfig,
@@ -241,6 +242,9 @@ export class KubernetesJobManager {
         return existingJob;
       }
 
+      // Create user-specific PostgreSQL credentials if DATABASE_URL is configured
+      await this.ensureUserCredentials(request.userId, request.channelId);
+
       // Create job manifest
       const jobManifest = this.createJobManifest(jobName, request);
 
@@ -267,6 +271,227 @@ export class KubernetesJobManager {
         error as Error
       );
     }
+  }
+
+  /**
+   * Ensure user-specific PostgreSQL credentials exist
+   */
+  private async ensureUserCredentials(userId: string, channelId: string): Promise<void> {
+    // Only create user credentials if DATABASE_URL is configured
+    if (!process.env.DATABASE_URL) {
+      return;
+    }
+
+    const secretName = this.getUserSecretName(userId, channelId);
+    
+    try {
+      // Check if secret already exists
+      await this.k8sCoreApi.readNamespacedSecret({
+        name: secretName,
+        namespace: this.config.namespace
+      });
+      logger.info(`User secret already exists: ${secretName}`);
+      return;
+    } catch (error) {
+      // Secret doesn't exist, create it
+      if ((error as any).response?.statusCode !== 404) {
+        throw error;
+      }
+    }
+
+    // Generate credentials
+    const username = this.generateDbUsername(userId, channelId);
+    const password = this.generateSecurePassword();
+    
+    // Determine if this is a DM or channel for metadata
+    const isDM = channelId.startsWith('D');
+    
+    // Create user-specific secret
+    const secret = {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: {
+        name: secretName,
+        namespace: this.config.namespace,
+        labels: {
+          app: "peerbot",
+          component: "postgresql-user",
+          "conversation-type": isDM ? "direct-message" : "channel",
+          ...(isDM ? { "user-id": userId } : { "channel-id": channelId }),
+        },
+        annotations: {
+          "peerbot.ai/conversation-type": isDM ? "direct-message" : "channel",
+          "peerbot.ai/user-id": userId,
+          "peerbot.ai/channel-id": channelId,
+          "peerbot.ai/db-username": username,
+          "peerbot.ai/created-at": new Date().toISOString(),
+        },
+      },
+      type: "Opaque",
+      data: {
+        username: Buffer.from(username).toString("base64"),
+        password: Buffer.from(password).toString("base64"),
+        "database-url": Buffer.from(this.buildUserDatabaseUrl(username, password)).toString("base64"),
+      },
+    };
+
+    await this.k8sCoreApi.createNamespacedSecret({
+      namespace: this.config.namespace,
+      body: secret
+    });
+
+    logger.info(`Created user secret: ${secretName} for user ${username}`);
+
+    // Create PostgreSQL user directly
+    await this.createPostgreSQLUser(username, password);
+  }
+
+  /**
+   * Generate database username based on conversation context
+   * - For channel conversations: channel_{channelId}
+   * - For direct messages: user_{userId}
+   */
+  private generateDbUsername(userId: string, channelId: string): string {
+    // Determine if this is a DM or channel based on channelId format
+    // Slack DM channels start with 'D' and group channels start with 'C'
+    const isDM = channelId.startsWith('D');
+    
+    if (isDM) {
+      // For DMs, use user-based naming
+      const sanitizedUserId = userId.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
+      return `user_${sanitizedUserId}`.substring(0, 63);
+    } else {
+      // For channels, use channel-based naming
+      const sanitizedChannelId = channelId.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
+      return `channel_${sanitizedChannelId}`.substring(0, 63);
+    }
+  }
+
+  /**
+   * Generate secure password
+   */
+  private generateSecurePassword(): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    for (let i = 0; i < 32; i++) {
+      result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+  }
+
+  /**
+   * Get secret name for user credentials based on conversation context
+   * - For channel conversations: peerbot-postgresql-channel-{channelId}
+   * - For direct messages: peerbot-postgresql-user-{userId}
+   */
+  private getUserSecretName(userId: string, channelId: string): string {
+    // Determine if this is a DM or channel based on channelId format
+    const isDM = channelId.startsWith('D');
+    
+    if (isDM) {
+      // For DMs, use user-based naming
+      const sanitized = userId.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+      return `peerbot-postgresql-user-${sanitized}`.substring(0, 253);
+    } else {
+      // For channels, use channel-based naming
+      const sanitized = channelId.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+      return `peerbot-postgresql-channel-${sanitized}`.substring(0, 253);
+    }
+  }
+
+  /**
+   * Build database URL for specific user
+   */
+  private buildUserDatabaseUrl(username: string, password: string): string {
+    // Parse the admin DATABASE_URL to get connection details
+    const adminDbUrl = process.env.DATABASE_URL!;
+    const url = new URL(adminDbUrl);
+    return `postgresql://${encodeURIComponent(username)}:${encodeURIComponent(password)}@${url.host}${url.pathname}`;
+  }
+
+  /**
+   * Create PostgreSQL user directly
+   */
+  private async createPostgreSQLUser(username: string, password: string): Promise<void> {
+    if (!process.env.DATABASE_URL) {
+      throw new Error('DATABASE_URL not configured');
+    }
+
+    const client = new Client({
+      connectionString: process.env.DATABASE_URL,
+    });
+
+    try {
+      await client.connect();
+      logger.info(`Creating PostgreSQL user: ${username}`);
+
+      // Check if user already exists
+      const userExistsResult = await client.query(
+        'SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = $1',
+        [username]
+      );
+
+      if (userExistsResult.rows.length > 0) {
+        logger.info(`PostgreSQL user ${username} already exists`);
+        return;
+      }
+
+      // Create user with limited privileges
+      await client.query(
+        `CREATE ROLE "${username}" WITH LOGIN PASSWORD $1`,
+        [password]
+      );
+
+      // Grant basic database access
+      const dbName = new URL(process.env.DATABASE_URL).pathname.slice(1);
+      await client.query(`GRANT CONNECT ON DATABASE "${dbName}" TO "${username}"`);
+      await client.query(`GRANT USAGE ON SCHEMA public TO "${username}"`);
+      await client.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "${username}"`);
+      await client.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "${username}"`);
+      await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "${username}"`);
+      await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO "${username}"`);
+
+      // Create Row Level Security policies for tenant isolation
+      const tenantId = this.extractTenantIdFromUsername(username);
+      
+      // Policy for conversations table
+      await client.query(
+        `CREATE POLICY "${username}_policy" ON conversations 
+         FOR ALL TO "${username}" 
+         USING (tenant_id = $1)`,
+        [tenantId]
+      );
+
+      // Policy for workspaces table
+      await client.query(
+        `CREATE POLICY "${username}_workspace_policy" ON workspaces 
+         FOR ALL TO "${username}" 
+         USING (tenant_id = $1)`,
+        [tenantId]
+      );
+
+      logger.info(`Successfully created PostgreSQL user: ${username}`);
+    } catch (error) {
+      logger.error(`Failed to create PostgreSQL user ${username}:`, error);
+      throw error;
+    } finally {
+      await client.end();
+    }
+  }
+
+  /**
+   * Extract tenant ID from username for RLS policies
+   */
+  private extractTenantIdFromUsername(username: string): string {
+    // Extract tenant ID from username patterns:
+    // user_U123ABC -> U123ABC
+    // channel_C456DEF -> C456DEF
+    if (username.startsWith('user_')) {
+      return username.substring(5); // Remove 'user_' prefix
+    } else if (username.startsWith('channel_')) {
+      return username.substring(8); // Remove 'channel_' prefix
+    }
+    return username; // fallback
   }
 
   /**
@@ -449,6 +674,17 @@ export class KubernetesJobManager {
                     name: "CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS",
                     value: "1",
                   },
+                  // Optional PostgreSQL database URL for conversation persistence
+                  ...(process.env.DATABASE_URL ? [{
+                    name: "DATABASE_URL",
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: this.getUserSecretName(templateData.userId, templateData.channelId),
+                        key: "database-url",
+                        optional: true,
+                      },
+                    },
+                  }] : []),
                 ],
                 volumeMounts: [
                   {

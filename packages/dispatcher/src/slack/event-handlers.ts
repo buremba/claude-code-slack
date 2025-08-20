@@ -9,7 +9,7 @@ import type {
   ThreadSession,
   WorkerJobRequest
 } from "../types";
-import { SessionManager } from "@claude-code-slack/core-runner";
+import { SessionManager, createConversationHistorySync } from "@claude-code-slack/core-runner";
 import logger from "../logger";
 
 export class SlackEventHandlers {
@@ -20,6 +20,7 @@ export class SlackEventHandlers {
   private repositoryCache = new Map<string, { repository: any; timestamp: number }>(); // username -> {repository, timestamp}
   private sessionMappings = new Map<string, string>(); // sessionKey -> claudeSessionId
   private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache TTL
+  private conversationHistorySync = createConversationHistorySync(); // New interface implementation
 
   constructor(
     private app: App,
@@ -422,7 +423,7 @@ export class SlackEventHandlers {
       const isFollowUpMessage = context.threadTs && context.threadTs !== context.messageTs;
       
       if (isFollowUpMessage) {
-        existingClaudeSessionId = await this.loadSessionMapping(username, sessionKey);
+        existingClaudeSessionId = await this.loadSessionMapping(username, sessionKey, context);
         if (existingClaudeSessionId) {
           logger.info(`Session ${sessionKey} - resuming Claude session: ${existingClaudeSessionId}`);
         } else {
@@ -634,7 +635,7 @@ export class SlackEventHandlers {
   /**
    * Load Claude session ID for thread
    */
-  private async loadSessionMapping(username: string, sessionKey: string): Promise<string | undefined> {
+  private async loadSessionMapping(username: string, sessionKey: string, context: SlackContext): Promise<string | undefined> {
     try {
       // Check memory cache first
       const cached = this.sessionMappings.get(sessionKey);
@@ -642,25 +643,19 @@ export class SlackEventHandlers {
         return cached;
       }
       
-      const path = await import('path');
-      const fs = await import('fs').then(m => m.promises);
+      // Use the conversation history sync interface
+      // Extract tenantId based on conversation context (channelId for channels, userId for DMs)
+      const tenantId = this.extractTenantId(context) || 'default-workspace';
+      const claudeSessionId = await this.conversationHistorySync.loadSessionMapping(sessionKey, tenantId);
       
-      const mappingFile = path.join(process.cwd(), '.claude', 'projects', username, `${sessionKey}.mapping`);
-      
-      try {
-        const claudeSessionId = await fs.readFile(mappingFile, 'utf8');
-        
+      if (claudeSessionId) {
         // Cache in memory
-        this.sessionMappings.set(sessionKey, claudeSessionId.trim());
-        
-        logger.info(`Loaded session mapping: ${sessionKey} -> ${claudeSessionId.trim()}`);
-        return claudeSessionId.trim();
-      } catch (error) {
-        if ((error as any).code !== 'ENOENT') {
-          logger.error(`Failed to read session mapping file for ${sessionKey}:`, error);
-        }
-        return undefined;
+        this.sessionMappings.set(sessionKey, claudeSessionId);
+        logger.info(`Loaded session mapping: ${sessionKey} -> ${claudeSessionId}`);
+        return claudeSessionId;
       }
+      
+      return undefined;
     } catch (error) {
       logger.error(`Failed to load session mapping for ${sessionKey}:`, error);
       return undefined;
@@ -1968,6 +1963,30 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
   }
 
   /**
+   * Extract tenant ID based on current conversation context
+   * - For channel conversations: use channelId
+   * - For direct messages: use userId
+   * Note: This needs context passed to it, so it's not used in current implementation
+   */
+  private extractTenantId(context?: { channelId: string; userId: string }): string | undefined {
+    if (!context) {
+      // Fallback for cases where context is not available
+      return process.env.SLACK_TEAM_ID || process.env.SLACK_WORKSPACE_ID;
+    }
+    
+    // Determine if this is a DM or channel based on channelId format
+    const isDM = context.channelId.startsWith('D');
+    
+    if (isDM) {
+      // For DMs, use the user ID as tenant
+      return context.userId;
+    } else {
+      // For channels, use the channel ID as tenant
+      return context.channelId;
+    }
+  }
+
+  /**
    * Cleanup all sessions
    */
   async cleanup(): Promise<void> {
@@ -1975,5 +1994,10 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
     this.activeSessions.clear();
     this.userMappings.clear();
     this.repositoryCache.clear();
+    
+    // Cleanup conversation history sync
+    if (this.conversationHistorySync.cleanup) {
+      await this.conversationHistorySync.cleanup();
+    }
   }
 }
