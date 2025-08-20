@@ -51,7 +51,6 @@ class ClaudeOperator {
 
     // Initialize controller
     this.controller = new ClaudeSessionController(
-      this.k8sApi,
       this.k8sCoreApi,
       this.customObjectsApi,
       this.logger,

@@ -22,7 +22,8 @@ export interface ClaudeSessionSpec {
 
 export interface ClaudeSessionStatus {
   phase?: "Pending" | "Running" | "Succeeded" | "Failed" | "Terminated";
-  jobName?: string;
+  podName?: string;
+  containerName?: string;
   startTime?: string;
   completionTime?: string;
   message?: string;

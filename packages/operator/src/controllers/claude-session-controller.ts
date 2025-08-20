@@ -3,8 +3,8 @@ import { Operator } from "k8s-operator-node";
 import { ClaudeSession, ClaudeSessionSpec, RateLimitEntry } from "../types/claude-session";
 import winston from "winston";
 
-interface JobTemplateData {
-  jobName: string;
+interface ContainerTemplateData {
+  containerName: string;
   namespace: string;
   workerImage: string;
   cpu: string;
@@ -24,8 +24,12 @@ interface JobTemplateData {
   resumeSessionId: string;
 }
 
+interface PodKey {
+  userId: string;
+  channelId: string;
+}
+
 export class ClaudeSessionController {
-  private k8sApi: k8s.BatchV1Api;
   private k8sCoreApi: k8s.CoreV1Api;
   private customObjectsApi: k8s.CustomObjectsApi;
   private logger: winston.Logger;
@@ -38,14 +42,12 @@ export class ClaudeSessionController {
   private readonly RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 
   constructor(
-    k8sApi: k8s.BatchV1Api,
     k8sCoreApi: k8s.CoreV1Api,
     customObjectsApi: k8s.CustomObjectsApi,
     logger: winston.Logger,
     namespace: string = "peerbot",
     workerImage: string = "claude-worker:latest"
   ) {
-    this.k8sApi = k8sApi;
     this.k8sCoreApi = k8sCoreApi;
     this.customObjectsApi = customObjectsApi;
     this.logger = logger;
@@ -77,16 +79,21 @@ export class ClaudeSessionController {
         return;
       }
 
-      // Check if job already exists
-      const existingJob = await this.findExistingJob(resource);
-      if (existingJob) {
-        await this.syncJobStatus(resource, existingJob);
-        return;
+      // Generate pod key for user/channel combination
+      const podKey = this.generatePodKey(resource.spec.userId, resource.spec.channelId);
+      
+      // Check if pod already exists for this user/channel
+      const existingPod = await this.findExistingPod(podKey);
+      
+      if (existingPod) {
+        // Add container to existing pod for concurrent message
+        const containerName = await this.addContainerToPod(existingPod, resource);
+        await this.updateStatus(resource, "Running", `Added container ${containerName} to existing pod ${existingPod.metadata?.name}`, existingPod.metadata?.name, containerName);
+      } else {
+        // Create new pod for this user/channel
+        const { pod, containerName } = await this.createPodWithContainer(podKey, resource);
+        await this.updateStatus(resource, "Running", `Created pod ${pod.metadata?.name} with container ${containerName}`, pod.metadata?.name, containerName);
       }
-
-      // Create new job
-      const job = await this.createJob(resource);
-      await this.updateStatus(resource, "Running", `Created job ${job.metadata?.name}`, job.metadata?.name);
 
     } catch (error) {
       this.logger.error(`Error reconciling ClaudeSession ${name}:`, error);
@@ -98,17 +105,16 @@ export class ClaudeSessionController {
    * Handle cleanup when ClaudeSession is deleted
    */
   private async handleDeletion(resource: ClaudeSession): Promise<void> {
-    const jobName = resource.status?.jobName;
-    if (jobName) {
+    const podName = resource.status?.podName;
+    const containerName = resource.status?.containerName;
+    
+    if (podName && containerName) {
       try {
-        await this.k8sApi.deleteNamespacedJob({
-          name: jobName,
-          namespace: resource.metadata?.namespace || this.namespace,
-          body: { propagationPolicy: "Background" }
-        });
-        this.logger.info(`Deleted job ${jobName} for ClaudeSession ${resource.metadata?.name}`);
+        // Remove container from pod, or delete pod if it's the last container
+        await this.removeContainerFromPod(podName, containerName, resource.metadata?.namespace || this.namespace);
+        this.logger.info(`Removed container ${containerName} from pod ${podName} for ClaudeSession ${resource.metadata?.name}`);
       } catch (error) {
-        this.logger.warn(`Failed to delete job ${jobName}:`, error);
+        this.logger.warn(`Failed to remove container ${containerName} from pod ${podName}:`, error);
       }
     }
   }
@@ -160,72 +166,82 @@ export class ClaudeSessionController {
   }
 
   /**
-   * Find existing job for a ClaudeSession
+   * Generate pod key for user/channel combination
    */
-  private async findExistingJob(resource: ClaudeSession): Promise<k8s.V1Job | null> {
+  private generatePodKey(userId: string, channelId: string): PodKey {
+    return { userId, channelId };
+  }
+
+  /**
+   * Generate pod name from pod key
+   */
+  private generatePodName(podKey: PodKey): string {
+    const safeUserId = podKey.userId.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+    const safeChannelId = podKey.channelId.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+    return `claude-worker-${safeUserId}-${safeChannelId}`;
+  }
+
+  /**
+   * Find existing pod for a user/channel combination
+   */
+  private async findExistingPod(podKey: PodKey): Promise<k8s.V1Pod | null> {
     try {
-      const namespace = resource.metadata?.namespace || this.namespace;
-      const sessionKey = resource.spec.sessionKey;
+      const podName = this.generatePodName(podKey);
       
-      // Create a safe label value from the session key
-      const labelValue = sessionKey.replace(/[^a-z0-9]/gi, "-").toLowerCase();
-      
-      const jobsResponse = await this.k8sApi.listNamespacedJob({
-        namespace: namespace,
-        labelSelector: `session-key=${labelValue}`
+      const podResponse = await this.k8sCoreApi.readNamespacedPod({
+        name: podName,
+        namespace: this.namespace
       });
-
-      // Find active jobs (not completed or failed)
-      for (const job of jobsResponse.items) {
-        const status = job.status;
-        if (!status?.succeeded && !status?.failed) {
-          // Verify exact session match via annotation
-          const annotations = job.metadata?.annotations || {};
-          if (annotations["claude.ai/session-key"] === sessionKey) {
-            return job;
-          }
-        }
+      
+      // Check if pod is running or pending (not terminating)
+      const pod = podResponse;
+      if (pod.metadata?.deletionTimestamp) {
+        return null; // Pod is being deleted
       }
-
-      return null;
+      
+      return pod;
     } catch (error) {
-      this.logger.error(`Error finding existing job for session ${resource.spec.sessionKey}:`, error);
+      if ((error as any).statusCode === 404) {
+        return null; // Pod doesn't exist
+      }
+      this.logger.error(`Error finding existing pod for user ${podKey.userId} channel ${podKey.channelId}:`, error);
       return null;
     }
   }
 
   /**
-   * Create a Kubernetes job for the ClaudeSession
+   * Create a new pod with first container for the ClaudeSession
    */
-  private async createJob(resource: ClaudeSession): Promise<k8s.V1Job> {
-    const jobName = this.generateJobName(resource.spec.sessionKey);
+  private async createPodWithContainer(podKey: PodKey, resource: ClaudeSession): Promise<{ pod: k8s.V1Pod, containerName: string }> {
+    const podName = this.generatePodName(podKey);
+    const containerName = this.generateContainerName(resource.spec.sessionKey);
     const namespace = resource.metadata?.namespace || this.namespace;
-    const jobManifest = this.createJobManifest(jobName, resource.spec);
+    const podManifest = this.createPodManifest(podName, containerName, resource.spec);
 
-    const response = await this.k8sApi.createNamespacedJob({
+    const response = await this.k8sCoreApi.createNamespacedPod({
       namespace: namespace,
-      body: jobManifest
+      body: podManifest
     });
 
-    this.logger.info(`Created job ${jobName} for ClaudeSession ${resource.metadata?.name}`);
-    return response;
+    this.logger.info(`Created pod ${podName} with container ${containerName} for ClaudeSession ${resource.metadata?.name}`);
+    return { pod: response, containerName };
   }
 
   /**
-   * Generate unique job name
+   * Generate unique container name
    */
-  private generateJobName(sessionKey: string): string {
-    const safeSessionKey = sessionKey.replace(/\./g, "-").toLowerCase();
+  private generateContainerName(sessionKey: string): string {
+    const safeSessionKey = sessionKey.replace(/[^a-z0-9]/gi, "-").toLowerCase();
     const timestamp = Date.now().toString(36).slice(-4);
-    return `claude-worker-${safeSessionKey}-${timestamp}`;
+    return `worker-${safeSessionKey}-${timestamp}`;
   }
 
   /**
-   * Create Kubernetes Job manifest (migrated from existing logic)
+   * Create Kubernetes Pod manifest with single container
    */
-  private createJobManifest(jobName: string, spec: ClaudeSessionSpec): k8s.V1Job {
-    const templateData: JobTemplateData = {
-      jobName,
+  private createPodManifest(podName: string, containerName: string, spec: ClaudeSessionSpec): k8s.V1Pod {
+    const templateData: ContainerTemplateData = {
+      containerName,
       namespace: this.namespace,
       workerImage: this.workerImage,
       cpu: spec.resources?.cpu || "500m",
@@ -246,133 +262,200 @@ export class ClaudeSessionController {
     };
 
     return {
-      apiVersion: "batch/v1",
-      kind: "Job",
+      apiVersion: "v1",
+      kind: "Pod",
       metadata: {
-        name: jobName,
+        name: podName,
         namespace: this.namespace,
         labels: {
           app: "claude-worker",
-          "session-key": spec.sessionKey.replace(/[^a-z0-9]/gi, "-").toLowerCase(),
           "user-id": spec.userId,
+          "channel-id": spec.channelId,
           component: "worker",
         },
         annotations: {
-          "claude.ai/session-key": spec.sessionKey,
           "claude.ai/user-id": spec.userId,
+          "claude.ai/channel-id": spec.channelId,
           "claude.ai/username": spec.username,
           "claude.ai/created-at": new Date().toISOString(),
         },
       },
       spec: {
-        activeDeadlineSeconds: templateData.timeoutSeconds,
-        ttlSecondsAfterFinished: 300,
-        template: {
-          metadata: {
-            labels: {
-              app: "claude-worker",
-              "session-key": spec.sessionKey.replace(/[^a-z0-9]/gi, "-").toLowerCase(),
-              component: "worker",
-            },
+        restartPolicy: "Never",
+        tolerations: [
+          {
+            key: "cloud.google.com/gke-spot",
+            operator: "Equal",
+            value: "true",
+            effect: "NoSchedule",
           },
-          spec: {
-            restartPolicy: "Never",
-            tolerations: [
-              {
-                key: "cloud.google.com/gke-spot",
-                operator: "Equal",
-                value: "true",
-                effect: "NoSchedule",
-              },
-            ],
-            containers: [
-              {
-                name: "claude-worker",
-                image: this.workerImage,
-                imagePullPolicy: "Always",
-                resources: {
-                  requests: {
-                    cpu: templateData.cpu,
-                    memory: templateData.memory,
-                  },
-                  limits: {
-                    cpu: templateData.cpu,
-                    memory: templateData.memory,
-                  },
-                },
-                env: [
-                  { name: "SESSION_KEY", value: templateData.sessionKey },
-                  { name: "USER_ID", value: templateData.userId },
-                  { name: "USERNAME", value: templateData.username },
-                  { name: "CHANNEL_ID", value: templateData.channelId },
-                  { name: "THREAD_TS", value: templateData.threadTs },
-                  { name: "REPOSITORY_URL", value: templateData.repositoryUrl },
-                  { name: "USER_PROMPT", value: templateData.userPrompt },
-                  { name: "SLACK_RESPONSE_CHANNEL", value: templateData.slackResponseChannel },
-                  { name: "SLACK_RESPONSE_TS", value: templateData.slackResponseTs },
-                  { name: "ORIGINAL_MESSAGE_TS", value: templateData.originalMessageTs },
-                  { name: "CLAUDE_OPTIONS", value: templateData.claudeOptions },
-                  { name: "RESUME_SESSION_ID", value: templateData.resumeSessionId },
-                  {
-                    name: "SLACK_BOT_TOKEN",
-                    valueFrom: {
-                      secretKeyRef: { name: "peerbot-secrets", key: "slack-bot-token" }
-                    }
-                  },
-                  {
-                    name: "GITHUB_TOKEN", 
-                    valueFrom: {
-                      secretKeyRef: { name: "peerbot-secrets", key: "github-token" }
-                    }
-                  },
-                  {
-                    name: "CLAUDE_CODE_OAUTH_TOKEN",
-                    valueFrom: {
-                      secretKeyRef: { name: "peerbot-secrets", key: "claude-code-oauth-token" }
-                    }
-                  },
-                  { name: "CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS", value: "1" }
-                ],
-                volumeMounts: [
-                  { name: "workspace", mountPath: "/workspace" }
-                ],
-                workingDir: "/app/packages/worker",
-                command: ["bun", "run", "dist/index.js"]
-              }
-            ],
-            volumes: [
-              { name: "workspace", emptyDir: { sizeLimit: "10Gi" } }
-            ],
-            serviceAccountName: "claude-worker"
-          }
-        }
+        ],
+        containers: [
+          this.createContainerSpec(containerName, templateData)
+        ],
+        volumes: [
+          { name: "workspace", emptyDir: { sizeLimit: "10Gi" } }
+        ],
+        serviceAccountName: "claude-worker"
       }
     };
   }
 
   /**
-   * Sync job status with ClaudeSession status
+   * Create container specification
    */
-  private async syncJobStatus(resource: ClaudeSession, job: k8s.V1Job): Promise<void> {
-    const status = job.status;
-    let phase: string;
-    let message: string;
+  private createContainerSpec(containerName: string, templateData: ContainerTemplateData): k8s.V1Container {
+    return {
+      name: containerName,
+      image: this.workerImage,
+      imagePullPolicy: "Always",
+      resources: {
+        requests: {
+          cpu: templateData.cpu,
+          memory: templateData.memory,
+        },
+        limits: {
+          cpu: templateData.cpu,
+          memory: templateData.memory,
+        },
+      },
+      env: [
+        { name: "SESSION_KEY", value: templateData.sessionKey },
+        { name: "USER_ID", value: templateData.userId },
+        { name: "USERNAME", value: templateData.username },
+        { name: "CHANNEL_ID", value: templateData.channelId },
+        { name: "THREAD_TS", value: templateData.threadTs },
+        { name: "REPOSITORY_URL", value: templateData.repositoryUrl },
+        { name: "USER_PROMPT", value: templateData.userPrompt },
+        { name: "SLACK_RESPONSE_CHANNEL", value: templateData.slackResponseChannel },
+        { name: "SLACK_RESPONSE_TS", value: templateData.slackResponseTs },
+        { name: "ORIGINAL_MESSAGE_TS", value: templateData.originalMessageTs },
+        { name: "CLAUDE_OPTIONS", value: templateData.claudeOptions },
+        { name: "RESUME_SESSION_ID", value: templateData.resumeSessionId },
+        {
+          name: "SLACK_BOT_TOKEN",
+          valueFrom: {
+            secretKeyRef: { name: "peerbot-secrets", key: "slack-bot-token" }
+          }
+        },
+        {
+          name: "GITHUB_TOKEN", 
+          valueFrom: {
+            secretKeyRef: { name: "peerbot-secrets", key: "github-token" }
+          }
+        },
+        {
+          name: "CLAUDE_CODE_OAUTH_TOKEN",
+          valueFrom: {
+            secretKeyRef: { name: "peerbot-secrets", key: "claude-code-oauth-token" }
+          }
+        },
+        { name: "CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS", value: "1" }
+      ],
+      volumeMounts: [
+        { name: "workspace", mountPath: "/workspace" }
+      ],
+      workingDir: "/app/packages/worker",
+      command: ["bun", "run", "dist/index.js"]
+    };
+  }
 
-    if (status?.succeeded) {
-      phase = "Succeeded";
-      message = "Job completed successfully";
-    } else if (status?.failed) {
-      phase = "Failed"; 
-      message = "Job failed";
-    } else if (status?.active) {
-      phase = "Running";
-      message = "Job is running";
-    } else {
-      phase = "Pending";
-      message = "Job is pending";
+  /**
+   * Add container to existing pod for concurrent message processing
+   */
+  private async addContainerToPod(pod: k8s.V1Pod, resource: ClaudeSession): Promise<string> {
+    const containerName = this.generateContainerName(resource.spec.sessionKey);
+    
+    const templateData: ContainerTemplateData = {
+      containerName,
+      namespace: this.namespace,
+      workerImage: this.workerImage,
+      cpu: resource.spec.resources?.cpu || "500m",
+      memory: resource.spec.resources?.memory || "1Gi", 
+      timeoutSeconds: resource.spec.timeoutSeconds || 300,
+      sessionKey: resource.spec.sessionKey,
+      userId: resource.spec.userId,
+      username: resource.spec.username,
+      channelId: resource.spec.channelId,
+      threadTs: resource.spec.threadTs || "",
+      repositoryUrl: resource.spec.repositoryUrl,
+      userPrompt: resource.spec.userPrompt,
+      slackResponseChannel: resource.spec.slackResponseChannel,
+      slackResponseTs: resource.spec.slackResponseTs,
+      originalMessageTs: resource.spec.originalMessageTs || "",
+      claudeOptions: resource.spec.claudeOptions,
+      resumeSessionId: resource.spec.resumeSessionId || ""
+    };
+
+    // Create new container spec
+    const newContainer = this.createContainerSpec(containerName, templateData);
+    
+    // Add container to pod spec
+    const updatedPod = {
+      ...pod,
+      spec: {
+        ...pod.spec!,
+        containers: [...(pod.spec?.containers || []), newContainer]
+      }
+    };
+
+    // Patch the pod with the new container
+    await this.k8sCoreApi.patchNamespacedPod({
+      name: pod.metadata!.name!,
+      namespace: pod.metadata!.namespace || this.namespace,
+      body: updatedPod,
+      headers: { "Content-Type": "application/merge-patch+json" }
+    });
+
+    this.logger.info(`Added container ${containerName} to pod ${pod.metadata?.name} for ClaudeSession ${resource.metadata?.name}`);
+    return containerName;
+  }
+
+  /**
+   * Remove container from pod or delete pod if it's the last container
+   */
+  private async removeContainerFromPod(podName: string, containerName: string, namespace: string): Promise<void> {
+    try {
+      const podResponse = await this.k8sCoreApi.readNamespacedPod({
+        name: podName,
+        namespace: namespace
+      });
+      
+      const pod = podResponse;
+      const containers = pod.spec?.containers || [];
+      
+      if (containers.length <= 1) {
+        // Delete the entire pod if this is the last container
+        await this.k8sCoreApi.deleteNamespacedPod({
+          name: podName,
+          namespace: namespace,
+          body: { gracePeriodSeconds: 30 }
+        });
+        this.logger.info(`Deleted pod ${podName} as it was the last container`);
+      } else {
+        // Remove just this container from the pod
+        const updatedContainers = containers.filter(c => c.name !== containerName);
+        const updatedPod = {
+          ...pod,
+          spec: {
+            ...pod.spec!,
+            containers: updatedContainers
+          }
+        };
+
+        await this.k8sCoreApi.patchNamespacedPod({
+          name: podName,
+          namespace: namespace,
+          body: updatedPod,
+          headers: { "Content-Type": "application/merge-patch+json" }
+        });
+        
+        this.logger.info(`Removed container ${containerName} from pod ${podName}`);
+      }
+    } catch (error) {
+      this.logger.error(`Error removing container ${containerName} from pod ${podName}:`, error);
+      throw error;
     }
-
-    await this.updateStatus(resource, phase, message, job.metadata?.name);
   }
 
   /**
@@ -382,7 +465,8 @@ export class ClaudeSessionController {
     resource: ClaudeSession,
     phase: string,
     message: string,
-    jobName?: string
+    podName?: string,
+    containerName?: string
   ): Promise<void> {
     const name = resource.metadata?.name;
     const namespace = resource.metadata?.namespace || this.namespace;
@@ -393,7 +477,8 @@ export class ClaudeSessionController {
       const status = {
         phase,
         message,
-        ...(jobName && { jobName }),
+        ...(podName && { podName }),
+        ...(containerName && { containerName }),
         ...(phase === "Running" && !resource.status?.startTime && { startTime: new Date().toISOString() }),
         ...(["Succeeded", "Failed", "Terminated"].includes(phase) && { completionTime: new Date().toISOString() })
       };

@@ -88,7 +88,9 @@ spec:
               phase:
                 type: string
                 enum: ["Pending", "Running", "Succeeded", "Failed", "Terminated"]
-              jobName:
+              podName:
+                type: string
+              containerName:
                 type: string
               startTime:
                 type: string
@@ -122,9 +124,12 @@ spec:
     - name: Phase
       type: string
       jsonPath: .status.phase
-    - name: Job
+    - name: Pod
       type: string
-      jsonPath: .status.jobName
+      jsonPath: .status.podName
+    - name: Container
+      type: string
+      jsonPath: .status.containerName
     - name: User
       type: string
       jsonPath: .spec.userId
