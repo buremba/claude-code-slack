@@ -172,10 +172,11 @@ export async function runClaudeWithProgress(
     pipeStream.destroy();
   });
 
-  // Use claude command directly
-  const claudeCommand = "claude";
+  // Use claude command with shell wrapper to capture final working directory
+  const claudeArgsString = config.claudeArgs.map(arg => `'${arg.replace(/'/g, "'\\''")}'`).join(' ');
+  const shellCommand = `claude ${claudeArgsString}; echo "FINAL_WORKING_DIRECTORY:$(pwd)"`;
   
-  const claudeProcess = spawn(claudeCommand, config.claudeArgs, {
+  const claudeProcess = spawn("bash", ["-c", shellCommand], {
     stdio: ["pipe", "pipe", "pipe"],
     cwd: workingDirectory || process.cwd(),
     env: {
@@ -329,6 +330,20 @@ export async function runClaudeWithProgress(
 
   let executionFile: string | undefined;
 
+  // Extract final working directory from output
+  function extractFinalWorkingDirectory(output: string): string | undefined {
+    const lines = output.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line.startsWith('FINAL_WORKING_DIRECTORY:')) {
+        return line.substring('FINAL_WORKING_DIRECTORY:'.length);
+      }
+    }
+    return undefined;
+  }
+
+  const finalWorkingDirectory = extractFinalWorkingDirectory(output);
+
   // Process the output and save execution metrics
   if (exitCode === 0) {
     try {
@@ -358,6 +373,7 @@ export async function runClaudeWithProgress(
       exitCode,
       output,
       executionFile,
+      finalWorkingDirectory,
     };
   } else {
     // Still try to save execution file if we have output
@@ -389,6 +405,7 @@ export async function runClaudeWithProgress(
       output,
       executionFile,
       error,
+      finalWorkingDirectory,
     };
   }
 }

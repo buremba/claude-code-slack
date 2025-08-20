@@ -17,6 +17,7 @@ const execAsync = promisify(exec);
 export class WorkspaceManager {
   private config: WorkspaceSetupConfig;
   private workspaceInfo?: WorkspaceInfo;
+  private currentWorkingDirectory?: string;
 
   constructor(config: WorkspaceSetupConfig) {
     this.config = config;
@@ -329,7 +330,69 @@ export class WorkspaceManager {
    * Get current working directory
    */
   getCurrentWorkingDirectory(): string {
+    return this.currentWorkingDirectory || this.workspaceInfo?.userDirectory || this.config.baseDirectory;
+  }
+
+  /**
+   * Get the repository root directory
+   */
+  getRepositoryRoot(): string {
     return this.workspaceInfo?.userDirectory || this.config.baseDirectory;
+  }
+
+  /**
+   * Get relative working directory path from repository root
+   */
+  getRelativeWorkingDirectory(): string {
+    const currentDir = this.getCurrentWorkingDirectory();
+    const repoRoot = this.getRepositoryRoot();
+    
+    if (currentDir === repoRoot) {
+      return './';
+    }
+    
+    // Calculate relative path
+    const path = require('path');
+    const relativePath = path.relative(repoRoot, currentDir);
+    return relativePath ? `./${relativePath}` : './';
+  }
+
+  /**
+   * Update the current working directory (for tracking directory changes during Claude execution)
+   */
+  async updateCurrentWorkingDirectory(newDirectory: string): Promise<void> {
+    if (!this.workspaceInfo) {
+      throw new WorkspaceError("updateCurrentWorkingDirectory", "Workspace not setup");
+    }
+
+    // Validate that the new directory exists and is within the workspace
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    
+    try {
+      const absolutePath = path.resolve(newDirectory);
+      const userDirectory = path.resolve(this.workspaceInfo.userDirectory);
+      
+      // Check if the new directory is within the workspace bounds
+      if (!absolutePath.startsWith(userDirectory)) {
+        logger.warn(`Directory ${absolutePath} is outside workspace bounds ${userDirectory}, ignoring update`);
+        return;
+      }
+      
+      // Check if directory exists
+      const stat = await fs.stat(absolutePath);
+      if (!stat.isDirectory()) {
+        logger.warn(`Path ${absolutePath} is not a directory, ignoring update`);
+        return;
+      }
+      
+      // Update the current working directory
+      this.currentWorkingDirectory = absolutePath;
+      logger.info(`Working directory updated to: ${absolutePath}`);
+      
+    } catch (error) {
+      logger.warn(`Failed to validate directory ${newDirectory}:`, error);
+    }
   }
 
   /**

@@ -22,6 +22,7 @@ export interface ClaudeExecutionResult {
   output: string;
   executionFile?: string;
   error?: string;
+  finalWorkingDirectory?: string;
 }
 
 export interface ProgressUpdate {

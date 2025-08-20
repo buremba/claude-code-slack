@@ -182,7 +182,7 @@ export class ClaudeWorker {
           },
           {
             type: "mrkdwn",
-            text: `📂 ./`
+            text: `📂 ${this.workspaceManager.getRelativeWorkingDirectory()}`
           }
         ]
       };
@@ -225,7 +225,7 @@ export class ClaudeWorker {
           },
           {
             type: "mrkdwn",
-            text: `📂 ./`
+            text: `📂 ${this.workspaceManager.getRelativeWorkingDirectory()}`
           }
         ]
       };
@@ -302,7 +302,18 @@ export class ClaudeWorker {
       logger.info("result.output exists:", !!result.output);
       logger.info("result.output length:", result.output?.length);
       logger.info("result.output sample:", result.output?.substring(0, 300));
+      logger.info("result.finalWorkingDirectory:", result.finalWorkingDirectory);
       logger.info("About to update Slack...");
+      
+      // Update workspace manager's working directory if captured
+      if (result.finalWorkingDirectory) {
+        try {
+          await this.workspaceManager.updateCurrentWorkingDirectory(result.finalWorkingDirectory);
+          logger.info("Updated workspace working directory to:", result.finalWorkingDirectory);
+        } catch (error) {
+          logger.warn("Failed to update working directory:", error);
+        }
+      }
       
       // Stop auto-push before final operations
       this.stopAutoPush();
@@ -439,7 +450,7 @@ docker build -t myapp .
 - Forms without action metadata will NOT work properly
 
 **Environment:**
-- Working dir: ./  
+- Working dir: ${this.workspaceManager.getRelativeWorkingDirectory()}
 - Repo: ${this.config.repositoryUrl}
 - Session: ${this.config.sessionKey}
 - Makefile directories and targets (indicating projects):
