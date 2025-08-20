@@ -1,23 +1,26 @@
 # Development Makefile for Claude Code Slack Bot
 
-.PHONY: help build compile dev test clean logs restart
+.PHONY: help build compile dev test clean logs restart operator-build operator-deploy
 
 # Default target
 help:
 	@echo "Available commands:"
-	@echo "  make dev       - Start Skaffold in dev mode with auto-rebuild"
-	@echo "  make build     - Build TypeScript and Docker image"
-	@echo "  make compile   - Compile TypeScript only"
-	@echo "  make test      - Run test bot"
-	@echo "  make logs      - Show dispatcher logs"
-	@echo "  make restart   - Restart the deployment"
-	@echo "  make clean     - Stop Skaffold and clean up resources"
+	@echo "  make dev              - Start Skaffold in dev mode with auto-rebuild"
+	@echo "  make build            - Build TypeScript and Docker image"
+	@echo "  make compile          - Compile TypeScript only"
+	@echo "  make test             - Run test bot"
+	@echo "  make logs             - Show dispatcher logs"
+	@echo "  make restart          - Restart the deployment"
+	@echo "  make clean            - Stop Skaffold and clean up resources"
+	@echo "  make operator-build   - Build operator Docker image"
+	@echo "  make operator-deploy  - Deploy operator to Kubernetes"
 
 # Compile TypeScript
 compile:
 	@echo "📦 Compiling TypeScript..."
 	@cd packages/dispatcher && bun run build.ts
 	@cd packages/core-runner && bun run build
+	@cd packages/operator && bun run build
 	@echo "✅ TypeScript compilation complete"
 
 # Build Docker image after compiling
@@ -87,3 +90,20 @@ secrets:
 		--namespace=peerbot \
 		--dry-run=client -o yaml | kubectl apply -f -
 	@echo "✅ Secrets updated"
+
+# Operator-specific targets
+operator-build:
+	@echo "🔧 Building Claude Operator..."
+	@cd packages/operator && bun run build
+	@docker build -f Dockerfile.operator -t claude-operator:dev .
+	@echo "✅ Claude Operator built"
+
+operator-deploy: operator-build
+	@echo "🚀 Deploying Claude Operator..."
+	@helm upgrade --install peerbot ./charts/peerbot \
+		--namespace peerbot \
+		--set operator.enabled=true \
+		--set dispatcher.useOperator=true \
+		--set operator.image.tag=dev \
+		--create-namespace
+	@echo "✅ Claude Operator deployed"

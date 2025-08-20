@@ -1,0 +1,53 @@
+# Multi-stage build for Claude Operator
+FROM node:20-alpine AS base
+
+# Install dependencies including build tools for native modules
+RUN apk add --no-cache python3 make g++
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package.json bun.lock ./
+COPY packages/operator/package.json ./packages/operator/
+
+# Install dependencies
+RUN npm install -g bun && bun install --frozen-lockfile
+
+# Copy source code
+COPY packages/operator/src ./packages/operator/src
+COPY packages/operator/tsconfig.json ./packages/operator/
+
+# Build the operator
+WORKDIR /app/packages/operator
+RUN bun run build
+
+# Production stage
+FROM node:20-alpine AS runtime
+
+# Install dumb-init for proper signal handling
+RUN apk add --no-cache dumb-init
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S operator -u 1001 -G nodejs
+
+# Set working directory
+WORKDIR /app
+
+# Copy built application
+COPY --from=base --chown=operator:nodejs /app/packages/operator/dist ./dist
+COPY --from=base --chown=operator:nodejs /app/packages/operator/package.json ./
+COPY --from=base --chown=operator:nodejs /app/packages/operator/node_modules ./node_modules
+
+# Switch to non-root user
+USER operator
+
+# Expose health check port
+EXPOSE 8081
+
+# Use dumb-init for proper signal handling
+ENTRYPOINT ["dumb-init", "--"]
+
+# Start the operator
+CMD ["node", "dist/index.js"]

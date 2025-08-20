@@ -5,6 +5,7 @@ import { join } from 'path';
 import { App, ExpressReceiver, LogLevel } from "@slack/bolt";
 import { SlackEventHandlers } from "./slack/event-handlers";
 import { KubernetesJobManager } from "./kubernetes/job-manager";
+import { ClaudeSessionManager } from "./kubernetes/session-manager";
 import { GitHubRepositoryManager } from "./github/repository-manager";
 import { setupHealthEndpoints } from "./simple-http";
 import type { DispatcherConfig } from "./types";
@@ -12,7 +13,7 @@ import logger from "./logger";
 
 export class SlackDispatcher {
   private app: App;
-  private jobManager: KubernetesJobManager;
+  private jobManager: KubernetesJobManager | ClaudeSessionManager;
   private repoManager: GitHubRepositoryManager;
   private config: DispatcherConfig;
 
@@ -61,8 +62,16 @@ export class SlackDispatcher {
       logger.info("Initialized Slack app in Socket mode");
     }
 
-    // Initialize managers
-    this.jobManager = new KubernetesJobManager(config.kubernetes);
+    // Initialize managers - choose based on USE_CLAUDE_OPERATOR flag
+    const useOperator = process.env.USE_CLAUDE_OPERATOR === "true";
+    if (useOperator) {
+      logger.info("✅ Using Claude Operator for session management");
+      this.jobManager = new ClaudeSessionManager(config.kubernetes);
+    } else {
+      logger.info("✅ Using legacy KubernetesJobManager for session management");
+      this.jobManager = new KubernetesJobManager(config.kubernetes);
+    }
+    
     this.repoManager = new GitHubRepositoryManager(config.github);
 
     this.setupErrorHandling();

@@ -95,6 +95,8 @@ spec:
             - name: DISABLE_RATE_LIMIT
               value: "true"
             {{- end }}
+            - name: USE_CLAUDE_OPERATOR
+              value: "{{ .Values.dispatcher.useOperator }}"
             - name: WORKER_IMAGE
               value: "{{ .Values.global.imageRegistry }}{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
             - name: WORKER_CPU
