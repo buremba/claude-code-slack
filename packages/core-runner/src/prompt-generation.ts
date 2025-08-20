@@ -163,6 +163,7 @@ export async function createPromptFile(
   
   const promptContent = promptParts.join("");
   
+  
   // Write to temporary file
   const promptPath = join(TEMP_DIR, `claude-prompt-${Date.now()}.md`);
   await writeFile(promptPath, promptContent, "utf-8");

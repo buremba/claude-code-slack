@@ -5,6 +5,7 @@ import { promisify } from "util";
 import { unlink, writeFile, stat } from "fs/promises";
 import { createWriteStream } from "fs";
 import { spawn } from "child_process";
+import { randomUUID } from "crypto";
 import logger from "./logger";
 import type { 
   ClaudeExecutionOptions, 
@@ -16,7 +17,7 @@ const execAsync = promisify(exec);
 
 const PIPE_PATH = `${process.env.RUNNER_TEMP || "/tmp"}/claude_prompt_pipe`;
 const EXECUTION_FILE = `${process.env.RUNNER_TEMP || "/tmp"}/claude-execution-output.json`;
-const BASE_ARGS = ["-p", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"];
+const BASE_ARGS = ["--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions", "-p"];
 
 function parseCustomEnvVars(claudeEnv?: string): Record<string, string> {
   if (!claudeEnv || claudeEnv.trim() === "") {
@@ -59,6 +60,18 @@ function prepareRunConfig(
   env: Record<string, string>;
 } {
   const claudeArgs = [...BASE_ARGS];
+
+  // Always use session management for persistence
+  if (options.resumeSessionId) {
+    // Resume existing session
+    claudeArgs.push("--resume", options.resumeSessionId);
+    logger.info(`Resuming Claude session: ${options.resumeSessionId}`);
+  } else {
+    // Create new session with specific ID for persistence
+    const sessionId = options.sessionId || randomUUID();
+    claudeArgs.push("--session-id", sessionId);
+    logger.info(`Creating new Claude session: ${sessionId}`);
+  }
 
   if (options.allowedTools) {
     claudeArgs.push("--allowedTools", options.allowedTools);
@@ -159,8 +172,11 @@ export async function runClaudeWithProgress(
     pipeStream.destroy();
   });
 
-  const claudeProcess = spawn("claude", config.claudeArgs, {
-    stdio: ["pipe", "pipe", "inherit"],
+  // Use claude command directly
+  const claudeCommand = "claude";
+  
+  const claudeProcess = spawn(claudeCommand, config.claudeArgs, {
+    stdio: ["pipe", "pipe", "pipe"],
     cwd: workingDirectory || process.cwd(),
     env: {
       ...process.env,
@@ -176,6 +192,8 @@ export async function runClaudeWithProgress(
 
   // Capture output for parsing execution metrics
   let output = "";
+  let errorOutput = "";
+  
   claudeProcess.stdout.on("data", async (data) => {
     const text = data.toString();
 
@@ -208,9 +226,21 @@ export async function runClaudeWithProgress(
     output += text;
   });
 
+  // Capture stderr for error diagnostics
+  claudeProcess.stderr.on("data", (data) => {
+    const text = data.toString();
+    errorOutput += text;
+    logger.error("Claude stderr:", text.trim());
+  });
+
   // Handle stdout errors
   claudeProcess.stdout.on("error", (error) => {
     logger.error("Error reading Claude stdout:", error);
+  });
+
+  // Handle stderr errors
+  claudeProcess.stderr.on("error", (error) => {
+    logger.error("Error reading Claude stderr:", error);
   });
 
   // Pipe from named pipe to Claude
@@ -342,13 +372,13 @@ export async function runClaudeWithProgress(
       }
     }
 
-    const error = `Claude process exited with code ${exitCode}`;
+    const error = `Claude process exited with code ${exitCode}${errorOutput ? `. Stderr: ${errorOutput}` : ''}`;
     
     // Call error callback
     if (onProgress) {
       await onProgress({
         type: "error",
-        data: { error, exitCode },
+        data: { error, exitCode, stderr: errorOutput },
         timestamp: Date.now(),
       });
     }

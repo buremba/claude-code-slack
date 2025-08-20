@@ -49,6 +49,7 @@ RUN bun install
 
 # Copy all source code
 COPY packages/ ./packages/
+COPY scripts/ ./scripts/
 
 # TypeScript is already installed as a devDependency
 
@@ -69,6 +70,15 @@ RUN mkdir -p /workspace && \
     chown -R claude:claude /app && \
     chown -R claude:claude /workspace && \
     chmod 755 /workspace
+
+# Copy .claude/projects directory if it exists
+COPY --chown=claude:claude .claude/ /home/claude/.claude/
+
+# Ensure .claude directory structure exists for claude user and make scripts executable
+RUN mkdir -p /home/claude/.claude/projects && \
+    chown -R claude:claude /home/claude/.claude && \
+    chmod -R 755 /home/claude/.claude && \
+    chmod +x /app/scripts/*.sh
 
 # Switch to non-root user
 USER claude

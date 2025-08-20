@@ -306,7 +306,7 @@ export class KubernetesJobManager {
       slackResponseTs: request.slackResponseTs,
       originalMessageTs: request.originalMessageTs,
       claudeOptions: JSON.stringify(request.claudeOptions),
-      conversationHistory: JSON.stringify(request.conversationHistory || []),
+      resumeSessionId: request.resumeSessionId,
       // These will be injected from secrets/configmaps
       slackToken: "", 
       githubToken: "",
@@ -357,7 +357,7 @@ export class KubernetesJobManager {
               {
                 name: "claude-worker",
                 image: this.config.workerImage,
-                imagePullPolicy: process.env.NODE_ENV === 'production' ? "Always" : "IfNotPresent",
+                imagePullPolicy: "Always",
                 resources: {
                   requests: {
                     cpu: this.config.cpu,
@@ -414,8 +414,8 @@ export class KubernetesJobManager {
                     value: templateData.claudeOptions,
                   },
                   {
-                    name: "CONVERSATION_HISTORY",
-                    value: templateData.conversationHistory,
+                    name: "RESUME_SESSION_ID",
+                    value: templateData.resumeSessionId || "",
                   },
                   // Worker needs Slack token to send progress updates
                   {

@@ -173,16 +173,6 @@ runs:
         cd -
         # Install Claude Code globally
         bun install -g @anthropic-ai/claude-code@1.0.59
-
-    - name: Setup Network Restrictions
-      if: steps.prepare.outputs.contains_trigger == 'true' && inputs.experimental_allowed_domains != ''
-      shell: bash
-      run: |
-        chmod +x ${GITHUB_ACTION_PATH}/scripts/setup-network-restrictions.sh
-        ${GITHUB_ACTION_PATH}/scripts/setup-network-restrictions.sh
-      env:
-        EXPERIMENTAL_ALLOWED_DOMAINS: ${{ inputs.experimental_allowed_domains }}
-
     - name: Run Claude Code
       id: claude-code
       if: steps.prepare.outputs.contains_trigger == 'true'

@@ -170,7 +170,15 @@ async function runTest(prompt) {
   }
 }
 
-// Run the test
-runTest('Create me a new project for my landing page of a Pet Store? It\' is a fictionary app so be creating don\'t ask me. Project name is "Pet Store {timestamp}"');
-runTest('Create a button to add a new pet to the pet store');
-runTest("Create 5 tasks which will each return a random number and then you will sum all them.")
+// Get prompt from command line arguments or use default
+const customPrompt = process.argv.slice(2).join(' ');
+
+if (customPrompt) {
+  // Use the custom prompt
+  runTest(customPrompt);
+} else {
+  // Run default tests
+  runTest('Create me a new project for my landing page of a Pet Store? It\' is a fictionary app so be creating don\'t ask me. Project name is "Pet Store {timestamp}"');
+  runTest('Create a button to add a new pet to the pet store');
+  runTest("Create 5 tasks which will each return a random number and then you will sum all them.");
+}

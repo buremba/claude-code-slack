@@ -13,7 +13,7 @@ export interface WorkerConfig {
   slackResponseChannel: string;
   slackResponseTs: string;
   claudeOptions: string; // JSON string
-  conversationHistory?: string; // JSON string
+  resumeSessionId?: string; // Claude session ID to resume from
   slack: {
     token: string;
     refreshToken?: string;

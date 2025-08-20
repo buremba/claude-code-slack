@@ -257,7 +257,7 @@ resourceQuota:
     pods: 20
     jobs: 15
     configmaps: 10
-    secrets: 10
+    secrets: 100
     services: 5
     pvcs: 5
     loadbalancers: 1

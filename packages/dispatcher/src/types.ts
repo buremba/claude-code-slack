@@ -66,7 +66,7 @@ export interface WorkerJobRequest {
   slackResponseTs: string;
   originalMessageTs?: string; // Original user message timestamp for reactions
   claudeOptions: ClaudeExecutionOptions;
-  conversationHistory?: Array<{ role: string; content: string; timestamp: number }>;
+  resumeSessionId?: string; // Claude session ID to resume from
 }
 
 export interface ThreadSession {
@@ -77,6 +77,7 @@ export interface ThreadSession {
   username: string;
   jobName?: string;
   repositoryUrl: string;
+  claudeSessionId?: string; // Claude session ID for resumption
   lastActivity: number;
   status: "pending" | "starting" | "running" | "completed" | "error" | "timeout";
   createdAt: number;
@@ -110,7 +111,7 @@ export interface JobTemplateData {
   slackResponseTs: string;
   originalMessageTs?: string; // Original user message timestamp for reactions
   claudeOptions: string; // JSON string
-  conversationHistory: string; // JSON string
+  resumeSessionId?: string; // Claude session ID to resume from
   // Environment variables from config
   slackToken: string;
   githubToken: string;

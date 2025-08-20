@@ -18,6 +18,7 @@ export class SlackEventHandlers {
   private recentEvents = new Map<string, number>(); // eventKey -> timestamp
   private messageReactions = new Map<string, { channel: string; ts: string }>(); // sessionKey -> message info
   private repositoryCache = new Map<string, { repository: any; timestamp: number }>(); // username -> {repository, timestamp}
+  private sessionMappings = new Map<string, string>(); // sessionKey -> claudeSessionId
   private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache TTL
 
   constructor(
@@ -412,33 +413,24 @@ export class SlackEventHandlers {
     }
 
     try {
-      // Parallel API calls for better performance
-      const parallelStartTime = Date.now();
+      // Get user's GitHub username mapping
+      const username = await this.getOrCreateUserMapping(context.userId, client);
       
-      // Start all parallel operations
-      const [username, baseConversationHistory] = await Promise.all([
-        // Get or create user's GitHub username mapping
-        this.getOrCreateUserMapping(context.userId, client),
-        
-        // Fetch conversation history from Slack if this is a thread
-        context.threadTs 
-          ? this.fetchConversationHistory(context.channelId, context.threadTs, client)
-          : Promise.resolve([])
-      ]);
+      // Only try to resume if this is a follow-up message in an existing thread
+      // (i.e., threadTs exists and is different from messageTs)
+      let existingClaudeSessionId: string | undefined;
+      const isFollowUpMessage = context.threadTs && context.threadTs !== context.messageTs;
       
-      // Ensure the current user request is included in the conversation history
-      // This is important for form submissions where the request isn't a regular message yet
-      const conversationHistory = [
-        ...baseConversationHistory,
-        {
-          role: 'user',
-          content: userRequest,
-          timestamp: parseFloat(context.messageTs) * 1000
+      if (isFollowUpMessage) {
+        existingClaudeSessionId = await this.loadSessionMapping(username, sessionKey);
+        if (existingClaudeSessionId) {
+          logger.info(`Session ${sessionKey} - resuming Claude session: ${existingClaudeSessionId}`);
+        } else {
+          logger.info(`Session ${sessionKey} - follow-up message but no existing session found, creating new`);
         }
-      ];
-      
-      logger.info(`[TIMING] Parallel operations took ${Date.now() - parallelStartTime}ms`);
-      logger.info(`Session ${sessionKey} - fetched ${conversationHistory.length} messages from thread`);
+      } else {
+        logger.info(`Session ${sessionKey} - new thread, creating new Claude session`);
+      }
       
       // Check repository cache first
       let repository;
@@ -464,6 +456,7 @@ export class SlackEventHandlers {
         userId: context.userId,
         username,
         repositoryUrl: repository.repositoryUrl,
+        claudeSessionId: existingClaudeSessionId,
         lastActivity: Date.now(),
         status: "pending",
         createdAt: Date.now(),
@@ -505,7 +498,7 @@ export class SlackEventHandlers {
           ...this.config.claude,
           timeoutMinutes: this.config.sessionTimeoutMinutes.toString(),
         },
-        conversationHistory,
+        resumeSessionId: existingClaudeSessionId,
       };
 
       const jobName = await this.jobManager.createWorkerJob(jobRequest);
@@ -636,43 +629,41 @@ export class SlackEventHandlers {
     return true;
   }
 
+
+
   /**
-   * Fetch conversation history from Slack thread
+   * Load Claude session ID for thread
    */
-  private async fetchConversationHistory(
-    channelId: string, 
-    threadTs: string | undefined,
-    client: any
-  ): Promise<Array<{ role: string; content: string; timestamp: number }>> {
-    if (!threadTs) {
-      return [];
-    }
-
+  private async loadSessionMapping(username: string, sessionKey: string): Promise<string | undefined> {
     try {
-      const result = await client.conversations.replies({
-        channel: channelId,
-        ts: threadTs,
-        limit: 100, // Get up to 100 messages in the thread
-      });
-
-      if (!result.messages || result.messages.length === 0) {
-        return [];
+      // Check memory cache first
+      const cached = this.sessionMappings.get(sessionKey);
+      if (cached) {
+        return cached;
       }
-
-      // Convert Slack messages to conversation format
-      const conversation = result.messages
-        .filter((msg: any) => msg.text && msg.user) // Filter out system messages
-        .map((msg: any) => ({
-          role: msg.user === this.config.slack.botUserId ? 'assistant' : 'user',
-          content: msg.text,
-          timestamp: parseFloat(msg.ts) * 1000, // Convert Slack timestamp to milliseconds
-        }));
-
-      logger.info(`Fetched ${conversation.length} messages from thread ${threadTs}`);
-      return conversation;
+      
+      const path = await import('path');
+      const fs = await import('fs').then(m => m.promises);
+      
+      const mappingFile = path.join(process.cwd(), '.claude', 'projects', username, `${sessionKey}.mapping`);
+      
+      try {
+        const claudeSessionId = await fs.readFile(mappingFile, 'utf8');
+        
+        // Cache in memory
+        this.sessionMappings.set(sessionKey, claudeSessionId.trim());
+        
+        logger.info(`Loaded session mapping: ${sessionKey} -> ${claudeSessionId.trim()}`);
+        return claudeSessionId.trim();
+      } catch (error) {
+        if ((error as any).code !== 'ENOENT') {
+          logger.error(`Failed to read session mapping file for ${sessionKey}:`, error);
+        }
+        return undefined;
+      }
     } catch (error) {
-      logger.error(`Failed to fetch conversation history: ${error}`);
-      return [];
+      logger.error(`Failed to load session mapping for ${sessionKey}:`, error);
+      return undefined;
     }
   }
 
@@ -850,6 +841,12 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
           if (session) {
             session.status = jobStatus as any;
             session.lastActivity = Date.now();
+            
+            // If job completed successfully and we don't have a session ID yet, try to get it from the worker
+            if (jobStatus === "completed" && !session.claudeSessionId) {
+              // The worker should have saved the session mapping to the repository
+              logger.info(`Job completed for session ${sessionKey} - session mapping should be saved by worker`);
+            }
           }
           
           // Clean up session after delay

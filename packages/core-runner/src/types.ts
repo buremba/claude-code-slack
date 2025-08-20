@@ -12,6 +12,8 @@ export interface ClaudeExecutionOptions {
   fallbackModel?: string;
   timeoutMinutes?: string;
   model?: string;
+  sessionId?: string;
+  resumeSessionId?: string;
 }
 
 export interface ClaudeExecutionResult {

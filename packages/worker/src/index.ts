@@ -151,29 +151,116 @@ export class ClaudeWorker {
     return lines.join("\n");
   }
 
+
   /**
-   * Check if this is a simple query that doesn't need repository access
+   * Save Claude session ID mapping for thread
    */
-  private isSimpleQuery(prompt: string): boolean {
-    // Simple queries are typically short and don't mention files/code
-    const lowerPrompt = prompt.toLowerCase();
-    
-    // Keywords that indicate need for repository
-    const needsRepoKeywords = [
-      'file', 'code', 'function', 'class', 'method', 'variable',
-      'repository', 'repo', 'git', 'commit', 'branch', 'pull request',
-      'pr', 'implement', 'fix', 'bug', 'feature', 'refactor', 'test',
-      'build', 'compile', 'run', 'execute', 'debug', 'deploy',
-      'create', 'add', 'update', 'modify', 'change', 'edit'
-    ];
-    
-    // Check if prompt is short and doesn't contain repo-related keywords
-    const isShort = prompt.length < 100;
-    const hasRepoKeywords = needsRepoKeywords.some(keyword => 
-      lowerPrompt.includes(keyword)
-    );
-    
-    return isShort && !hasRepoKeywords;
+  private async saveSessionMapping(claudeSessionId: string): Promise<void> {
+    try {
+      const fs = await import('fs').then(m => m.promises);
+      const path = await import('path');
+      
+      const sessionDir = path.join('/workspace', this.config.username, '.claude', 'projects', this.config.username);
+      await fs.mkdir(sessionDir, { recursive: true });
+      
+      const mappingFile = path.join(sessionDir, `${this.config.sessionKey}.mapping`);
+      await fs.writeFile(mappingFile, claudeSessionId, 'utf8');
+      
+      logger.info(`Saved session mapping: ${this.config.sessionKey} -> ${claudeSessionId}`);
+    } catch (error) {
+      logger.error(`Failed to save session mapping for ${this.config.sessionKey}:`, error);
+    }
+  }
+
+  /**
+   * Sync conversation files - copy the current session's JSONL file from ~/.claude/projects
+   */
+  private async syncConversationFiles(): Promise<void> {
+    try {
+      const fs = await import('fs').then(m => m.promises);
+      const path = await import('path');
+      
+      logger.info("Syncing conversation file for current session...");
+      
+      // Get the session ID from the Claude execution logs
+      // We need to find the session ID that was created for this execution
+      const logPath = `${process.env.RUNNER_TEMP || "/tmp"}/claude-execution-output.json`;
+      let sessionId: string | null = null;
+      
+      try {
+        const logContent = await fs.readFile(logPath, 'utf-8');
+        const lines = logContent.split('\n').filter(line => line.trim());
+        
+        // Look for the session_id in the log entries
+        for (const line of lines) {
+          try {
+            const entry = JSON.parse(line);
+            if (entry.session_id) {
+              sessionId = entry.session_id;
+              break;
+            }
+          } catch {
+            // Skip invalid JSON lines
+          }
+        }
+      } catch (logError) {
+        logger.warn("Could not read Claude execution log:", logError);
+      }
+      
+      if (!sessionId) {
+        logger.warn("Could not find session ID, skipping conversation sync");
+        return;
+      }
+      
+      logger.info(`Found session ID: ${sessionId}`);
+      
+      // Save session mapping for future resumption
+      await this.saveSessionMapping(sessionId);
+      
+      // Paths for the conversation file
+      const homeClaudeDir = '/home/claude/.claude/projects';
+      const workspaceDir = `/workspace/${this.config.username}`;
+      const workspaceName = this.config.username;
+      const sessionFile = `${sessionId}.jsonl`;
+      
+      const srcPath = path.join(homeClaudeDir, workspaceName, sessionFile);
+      const destDir = path.join(workspaceDir, '.claude', 'projects');
+      const destPath = path.join(destDir, sessionFile);
+      
+      logger.info(`Copying conversation file from ${srcPath} to ${destPath}`);
+      
+      // Check if source file exists
+      try {
+        await fs.access(srcPath);
+      } catch {
+        logger.info(`No conversation file found at ${srcPath}`);
+        return;
+      }
+      
+      // Ensure destination directory exists
+      await fs.mkdir(destDir, { recursive: true });
+      
+      // Copy the conversation file
+      await fs.copyFile(srcPath, destPath);
+      logger.info(`Successfully synced conversation file: ${sessionFile}`);
+      
+      // Commit the conversation file
+      try {
+        const status = await this.workspaceManager.getRepositoryStatus();
+        if (status.hasChanges) {
+          await this.workspaceManager.commitAndPush(
+            `Save conversation: ${sessionFile}`
+          );
+          logger.info(`Committed conversation file to repository`);
+        }
+      } catch (error) {
+        logger.warn("Failed to commit conversation file:", error);
+      }
+      
+    } catch (error) {
+      logger.error("Error syncing conversation files:", error);
+      throw error;
+    }
   }
 
   /**
@@ -201,11 +288,11 @@ export class ClaudeWorker {
         elements: [
           {
             type: "mrkdwn",
-            text: `🪚 ${this.config.username}`
+              text: `🪚 <${this.config.repositoryUrl.replace('github.com', 'github.dev')}/tree/main|${this.config.username}>`
           },
           {
             type: "mrkdwn",
-            text: `📂 /workspace/${this.config.username}`
+            text: `📂 ./`
           }
         ]
       };
@@ -217,76 +304,63 @@ export class ClaudeWorker {
       const userPrompt = Buffer.from(this.config.userPrompt, "base64").toString("utf-8");
       logger.info(`User prompt: ${userPrompt.substring(0, 100)}...`);
       
-      // Check if this is a simple query that doesn't need repository
-      const isSimpleQuery = this.isSimpleQuery(userPrompt);
-      
-      if (!isSimpleQuery) {
-        // Update initial Slack message with simple status
-        await this.slackIntegration.updateProgress("💻 Setting up workspace...");
+      // Update initial Slack message with simple status
+      await this.slackIntegration.updateProgress("💻 Setting up workspace...");
 
-        // Setup workspace
-        logger.info("Setting up workspace...");
-        await this.workspaceManager.setupWorkspace(
-          this.config.repositoryUrl,
-          this.config.username,
-          this.config.sessionKey
-        );
-        
-        // Create or checkout session branch
-        logger.info("Setting up session branch...");
-        await this.workspaceManager.createSessionBranch(this.config.sessionKey);
-        
-        // Now that branch exists, update context block with proper URLs
-        const branchName = `claude/${this.config.sessionKey.replace(/\./g, "-")}`;
-        const workspaceDir = `/workspace/${this.config.username}`;
-        
-        contextBlock = {
-          type: "context",
-          elements: [
-            {
-              type: "mrkdwn",
-              text: `🪚 <${this.config.repositoryUrl.replace('github.com', 'github.dev')}/tree/${branchName}|${this.config.username}>`
-            },
-            {
-              type: "mrkdwn",
-              text: `🔀 <${this.config.repositoryUrl}/compare/main...${branchName}|Create Pull Request>`
-            },
-            {
-              type: "mrkdwn",
-              text: `📂 ${workspaceDir}`
-            }
-          ]
-        };
-        
-        // Update context block with proper URLs
-        this.slackIntegration.setContextBlock(contextBlock);
-        
-        // Start automatic git push
-        logger.info("Starting automatic git push monitoring...");
-        this.startAutoPush();
-      } else {
-        logger.info("Skipping workspace setup for simple query");
-        // Create a minimal workspace directory
-        const fs = await import('fs/promises');
-        const path = await import('path');
-        const workspaceDir = path.join('/workspace', this.config.username);
-        await fs.mkdir(workspaceDir, { recursive: true });
-        process.chdir(workspaceDir);
-      }
+      // Setup workspace
+      logger.info("Setting up workspace...");
+      await this.workspaceManager.setupWorkspace(
+        this.config.repositoryUrl,
+        this.config.username,
+        this.config.sessionKey
+      );
+      
+      // Create or checkout session branch
+      logger.info("Setting up session branch...");
+      await this.workspaceManager.createSessionBranch(this.config.sessionKey);
+      
+      // Now that branch exists, update context block with proper URLs
+      const branchName = `claude/${this.config.sessionKey.replace(/\./g, "-")}`;
+      
+      contextBlock = {
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: `🪚 <${this.config.repositoryUrl.replace('github.com', 'github.dev')}/tree/${branchName}|${this.config.username}>`
+          },
+          {
+            type: "mrkdwn",
+            text: `🔀 <${this.config.repositoryUrl}/compare/main...${branchName}|Create Pull Request>`
+          },
+          {
+            type: "mrkdwn",
+            text: `📂 ./`
+          }
+        ]
+      };
+      
+      // Update context block with proper URLs
+      this.slackIntegration.setContextBlock(contextBlock);
+      
+      // Start automatic git push
+      logger.info("Starting automatic git push monitoring...");
+      this.startAutoPush();
 
       // Update progress with simple status
       await this.slackIntegration.updateProgress("🚀 Starting Claude session...");
 
-      // Parse conversation history if provided
-      const conversationHistory = this.config.conversationHistory 
-        ? JSON.parse(this.config.conversationHistory)
-        : [];
-      logger.info(`Loaded ${conversationHistory.length} messages from conversation history`);
-      
-      // Update progress to show we're loading context
-      await this.slackIntegration.updateProgress("📚 Loading conversation context...");
+      // Check if we should resume an existing session
+      const shouldResume = !!this.config.resumeSessionId;
+      if (shouldResume) {
+        logger.info(`Resuming Claude session: ${this.config.resumeSessionId}`);
+        await this.slackIntegration.updateProgress("🔄 Resuming Claude session...");
+      } else {
+        logger.info("Creating new Claude session");
+        await this.slackIntegration.updateProgress("🤖 Creating new Claude session...");
+      }
 
-      // Prepare session context with conversation history
+      // Prepare session context
       const sessionContext = {
         platform: "slack" as const,
         channelId: this.config.channelId,
@@ -295,9 +369,8 @@ export class ClaudeWorker {
         threadTs: this.config.threadTs,
         messageTs: this.config.slackResponseTs,
         repositoryUrl: this.config.repositoryUrl,
-        workingDirectory: `/workspace/${this.config.username}`,
+        workingDirectory: this.workspaceManager.getCurrentWorkingDirectory(),
         customInstructions: this.generateCustomInstructions(),
-        conversationHistory, // Include the parsed conversation history
       };
 
       // Update progress to show we're starting Claude
@@ -313,8 +386,10 @@ export class ClaudeWorker {
         sessionKey: this.config.sessionKey,
         userPrompt,
         context: sessionContext,
-        options: JSON.parse(this.config.claudeOptions),
-        // No recovery options needed - conversation history is already in context
+        options: {
+          ...JSON.parse(this.config.claudeOptions),
+          resumeSessionId: this.config.resumeSessionId, // Use resumeSessionId if available
+        },
         onProgress: async (update) => {
           // Log timing for first output
           if (!firstOutputLogged && update.type === "output") {
@@ -353,6 +428,13 @@ export class ClaudeWorker {
         }
       } catch (pushError) {
         logger.warn("Final push failed:", pushError);
+      }
+
+      // Sync conversation files back to repository
+      try {
+        await this.syncConversationFiles();
+      } catch (syncError) {
+        logger.warn("Conversation file sync failed:", syncError);
       }
       
       if (result.success) {
@@ -407,6 +489,13 @@ export class ClaudeWorker {
         logger.warn("Error push failed:", pushError);
       }
       
+      // Sync conversation files even on error
+      try {
+        await this.syncConversationFiles();
+      } catch (syncError) {
+        logger.warn("Error conversation file sync failed:", syncError);
+      }
+      
       // Update Slack with error
       await this.slackIntegration.updateProgress(
         `💥 Worker crashed: ${error instanceof Error ? error.message : "Unknown error"}`
@@ -432,7 +521,7 @@ export class ClaudeWorker {
    */
   private generateCustomInstructions(): string {
     return `
-You are Claude Code running in a pod on K8S for user ${this.config.username}. 
+You are a helpful Claude Code agent running in a pod on K8S for user ${this.config.username}. 
 You MUST generate Markdown content that will be rendered in user's messaging app. 
 
 **Code Block Actions:**
@@ -472,7 +561,7 @@ docker build -t myapp .
 - Forms without action metadata will NOT work properly
 
 **Environment:**
-- Working dir: /workspace/${this.config.username}  
+- Working dir: ./  
 - Repo: ${this.config.repositoryUrl}
 - Session: ${this.config.sessionKey}
 - Makefile directories and targets (indicating projects):
@@ -489,9 +578,10 @@ ${this.getMakeTargetsSummary()}
 1. New project: create a folder in the current directory; ask for name, tech stack (dbname,providername,apiservicename etc.) in a form and autopopulate if provided. Collect secrets if needed. Deployment types are Node.js/bun, Python/uv, Docker, Docker Compose, Cloudflare (install flarectl and ask for personal access token).
 2. Feature/bug: if no Makefile in current dir, show a dropdown of folders containing a Makefile in a form; user selects one; set the current directory to the selected folder.
 3. Secrets: if required, collect values via form and map to .env file before running make commands.
-4. New hire: If the user says he wants to hire somebody, create a Claude agent on .claude/agents/agent-name.md and in there add it's traits based on the form values the user enters.
+4. New persona: If the user says he wants to create subagent/persona, create a Claude subagent on .claude/agents/agent-name.md and in there add it's traits based on the form values the user enters.
 5. If the user wants to remember something, add it to CLAUDE.md file.
 6. If the user wants to create an action, create a new file in .claude/actions/action-name.md and in there add the action's traits based on the form values the user enters.
+
 }.`
 .trim();
   }
@@ -561,7 +651,7 @@ async function main() {
       slackResponseChannel: process.env.SLACK_RESPONSE_CHANNEL!,
       slackResponseTs: process.env.SLACK_RESPONSE_TS!,
       claudeOptions: process.env.CLAUDE_OPTIONS!,
-      conversationHistory: process.env.CONVERSATION_HISTORY,
+      resumeSessionId: process.env.RESUME_SESSION_ID,
       slack: {
         token: process.env.SLACK_BOT_TOKEN!,
         refreshToken: process.env.SLACK_REFRESH_TOKEN,

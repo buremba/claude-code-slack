@@ -58,13 +58,19 @@ export class ClaudeSessionRunner {
       }
 
       // Add user message to conversation
-      await this.sessionManager.addMessage(sessionKey, {
-        role: "user",
+      const userMessage = {
+        role: "user" as const,
         content: userPrompt,
         timestamp: Date.now(),
-      });
+      };
+      
+      // Add to session state's conversation directly since addMessage is a no-op
+      sessionState.conversation.push(userMessage);
+      
+      // Also call the session manager method for consistency
+      await this.sessionManager.addMessage(sessionKey, userMessage);
 
-      // Create prompt file with full conversation context
+      // Create prompt file with full conversation context (now includes the user message)
       const promptPath = await createPromptFile(context, sessionState.conversation);
 
       // Start session timeout monitoring
