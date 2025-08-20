@@ -4,7 +4,6 @@ import { config as dotenvConfig } from 'dotenv';
 import { join } from 'path';
 import { App, ExpressReceiver, LogLevel } from "@slack/bolt";
 import { SlackEventHandlers } from "./slack/event-handlers";
-import { KubernetesJobManager } from "./kubernetes/job-manager";
 import { ClaudeSessionManager } from "./kubernetes/session-manager";
 import { GitHubRepositoryManager } from "./github/repository-manager";
 import { setupHealthEndpoints } from "./simple-http";
@@ -62,14 +61,9 @@ export class SlackDispatcher {
       logger.info("Initialized Slack app in Socket mode");
     }
 
-    // Initialize job manager based on configuration
-    if (config.useOperator) {
-      logger.info("✅ Using Claude Operator for session management");
-      this.jobManager = new ClaudeSessionManager(config.kubernetes);
-    } else {
-      logger.info("✅ Using direct Kubernetes job management");
-      this.jobManager = new KubernetesJobManager(config.kubernetes);
-    }
+    // Initialize job manager - always use operator
+    logger.info("✅ Using Claude Operator for session management");
+    this.jobManager = new ClaudeSessionManager(config.kubernetes);
     
     this.repoManager = new GitHubRepositoryManager(config.github);
 
@@ -349,7 +343,6 @@ async function main() {
       },
       sessionTimeoutMinutes: parseInt(process.env.SESSION_TIMEOUT_MINUTES || "5"),
       logLevel: process.env.LOG_LEVEL as any || LogLevel.INFO,
-      useOperator: process.env.USE_CLAUDE_OPERATOR === "true",
     };
 
     // Validate required configuration

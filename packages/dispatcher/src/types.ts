@@ -41,7 +41,6 @@ export interface DispatcherConfig {
   claude: Partial<ClaudeExecutionOptions>;
   sessionTimeoutMinutes: number;
   logLevel?: LogLevel;
-  useOperator?: boolean; // Use Claude Operator instead of direct job management
 }
 
 export interface SlackContext {
