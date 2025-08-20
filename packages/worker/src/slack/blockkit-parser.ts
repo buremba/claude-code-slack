@@ -148,6 +148,19 @@ function generateActionButton(
 }
 
 /**
+ * Convert markdown text to Slack formatting
+ */
+function convertMarkdownToSlack(text: string): string {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    // Convert **bold** and __bold__ to *bold* for Slack
+    .replace(/\*\*(.*?)\*\*/g, '*$1*')
+    .replace(/__(.*?)__/g, '*$1*');
+}
+
+/**
  * Custom renderer that collects actionable blocks
  */
 class BlockKitRenderer {
@@ -198,7 +211,10 @@ class BlockKitRenderer {
           .replace(/<\/{0,1}strike>/g, "~");
       },
       
-      heading: (token) => `${token.text}\n\n`,
+      heading: function(token) {
+        const text = this.parser.parseInline(token.tokens);
+        return `${convertMarkdownToSlack(text)}\n\n`;
+      },
       
       hr: (token) => token.raw,
       
@@ -206,13 +222,17 @@ class BlockKitRenderer {
         const items = token.ordered
           ? token.items.map(
               (item, i) => {
-                const parsed = this.parser.parseInline(item.tokens);
+                // Use the raw text and apply Slack formatting manually
+                const text = item.text || item.raw || '';
+                const parsed = convertMarkdownToSlack(text.trim());
                 return `${Number(token.start) + i}. ${parsed}`;
               }
             )
           : token.items.map((item) => {
               const marker = item.task ? (item.checked ? "☒" : "☐") : "-";
-              const parsed = this.parser.parseInline(item.tokens);
+              // Use the raw text and apply Slack formatting manually
+              const text = item.text || item.raw || '';
+              const parsed = convertMarkdownToSlack(text.trim());
               return `${marker} ${parsed}`;
             });
 
@@ -271,18 +291,7 @@ class BlockKitRenderer {
       
       image: () => "",
       
-      text: (token) => {
-        let text = token.text
-          .replaceAll("&", "&amp;")
-          .replaceAll("<", "&lt;")
-          .replaceAll(">", "&gt;");
-          
-        // Manually convert **bold** to *bold* and __bold__ to *bold*
-        text = text.replace(/\*\*(.*?)\*\*/g, '*$1*');
-        text = text.replace(/__(.*?)__/g, '*$1*');
-        
-        return text;
-      },
+      text: (token) => convertMarkdownToSlack(token.text),
       
       // #endregion
     } satisfies MarkedExtension["renderer"];

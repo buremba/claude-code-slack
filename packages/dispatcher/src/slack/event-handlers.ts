@@ -104,16 +104,7 @@ export class SlackEventHandlers {
           return;
         }
 
-        // Add "eyes" emoji to indicate we're processing the message
-        try {
-          await client.reactions.add({
-            channel: context.channelId,
-            timestamp: context.messageTs,
-            name: "eyes",
-          });
-        } catch (reactionError) {
-          logger.error("Failed to add processing reaction:", reactionError);
-        }
+        // Note: Processing indication will be handled by the worker with "gear" reaction
 
         // Extract user request (remove bot mention)
         const userRequest = this.extractUserRequest(context.text);
@@ -355,16 +346,7 @@ export class SlackEventHandlers {
           return;
         }
 
-        // Add "eyes" emoji to indicate we're processing the message
-        try {
-          await client.reactions.add({
-            channel: context.channelId,
-            timestamp: context.messageTs,
-            name: "eyes",
-          });
-        } catch (reactionError) {
-          logger.error("Failed to add processing reaction:", reactionError);
-        }
+        // Note: Processing indication will be handled by the worker with "gear" reaction
 
         const userRequest = this.extractUserRequest(context.text);
         await this.handleUserRequest(context, userRequest, client);
@@ -416,20 +398,13 @@ export class SlackEventHandlers {
       // Get user's GitHub username mapping
       const username = await this.getOrCreateUserMapping(context.userId, client);
       
-      // Only try to resume if this is a follow-up message in an existing thread
-      // (i.e., threadTs exists and is different from messageTs)
-      let existingClaudeSessionId: string | undefined;
-      const isFollowUpMessage = context.threadTs && context.threadTs !== context.messageTs;
+      // Check if we have an existing Claude session for this thread
+      const existingClaudeSessionId = await this.loadSessionMapping(username, sessionKey);
       
-      if (isFollowUpMessage) {
-        existingClaudeSessionId = await this.loadSessionMapping(username, sessionKey);
-        if (existingClaudeSessionId) {
-          logger.info(`Session ${sessionKey} - resuming Claude session: ${existingClaudeSessionId}`);
-        } else {
-          logger.info(`Session ${sessionKey} - follow-up message but no existing session found, creating new`);
-        }
+      if (existingClaudeSessionId) {
+        logger.info(`Session ${sessionKey} - resuming Claude session: ${existingClaudeSessionId}`);
       } else {
-        logger.info(`Session ${sessionKey} - new thread, creating new Claude session`);
+        logger.info(`Session ${sessionKey} - will create new Claude session`);
       }
       
       // Check repository cache first
@@ -931,12 +906,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
     const messageInfo = this.messageReactions.get(sessionKey);
     if (messageInfo && client) {
       try {
-        // Remove "eyes" reaction
-        await client.reactions.remove({
-          channel: messageInfo.channel,
-          timestamp: messageInfo.ts,
-          name: "eyes",
-        });
+        // Note: No "eyes" reaction to remove since worker handles reactions
         
         // Add completion reaction
         await client.reactions.add({
