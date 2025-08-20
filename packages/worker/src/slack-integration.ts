@@ -162,6 +162,13 @@ export class SlackIntegration {
         });
       }
       
+      // Add default action buttons
+      const defaultActions = await this.createDefaultActionButtons();
+      if (defaultActions) {
+        blocks.push({ type: "divider" });
+        blocks.push(defaultActions);
+      }
+      
       const updateOptions: any = {
         channel: this.responseChannel,
         ts: this.responseTs,
@@ -419,6 +426,101 @@ export class SlackIntegration {
     });
 
     return `📝 **Task Progress**\n\n${todoLines.join('\n')}`;
+  }
+
+  /**
+   * Create default action buttons
+   */
+  private async createDefaultActionButtons(): Promise<any | null> {
+    const elements: any[] = [];
+    
+    // Always add Cleanup button
+    elements.push({
+      type: "button",
+      text: {
+        type: "plain_text",
+        text: "🗑️ Cleanup"
+      },
+      action_id: "cleanup_thread",
+      value: "cleanup",
+      style: "danger",
+      confirm: {
+        title: {
+          type: "plain_text",
+          text: "Confirm Cleanup"
+        },
+        text: {
+          type: "mrkdwn",
+          text: "This will delete the worker pod and persistent volume. Are you sure?"
+        },
+        confirm: {
+          type: "plain_text",
+          text: "Yes, Cleanup"
+        },
+        deny: {
+          type: "plain_text",
+          text: "Cancel"
+        }
+      }
+    });
+    
+    // Check if Makefile exists for Create Preview button
+    const hasMakefile = await this.checkMakefileExists();
+    if (hasMakefile) {
+      elements.push({
+        type: "button",
+        text: {
+          type: "plain_text",
+          text: "👀 Create Preview"
+        },
+        action_id: "create_preview",
+        value: "preview",
+        style: "primary"
+      });
+    }
+    
+    if (elements.length === 0) {
+      return null;
+    }
+    
+    return {
+      type: "actions",
+      elements: elements
+    };
+  }
+  
+  /**
+   * Check if Makefile exists in current workspace
+   */
+  private async checkMakefileExists(): Promise<boolean> {
+    try {
+      const fs = await import('fs').then(m => m.promises);
+      const path = await import('path');
+      
+      // Check common workspace paths
+      const workspacePaths = [
+        process.cwd(),
+        '/workspace',
+        process.env.WORKSPACE_PATH || process.cwd()
+      ];
+      
+      for (const workspacePath of workspacePaths) {
+        const makefilePath = path.join(workspacePath, 'Makefile');
+        try {
+          await fs.access(makefilePath);
+          logger.info(`Found Makefile at: ${makefilePath}`);
+          return true;
+        } catch {
+          // Continue to next path
+        }
+      }
+      
+      logger.info('No Makefile found in workspace paths');
+      return false;
+    } catch (error) {
+      logger.error('Error checking for Makefile:', error);
+      return false;
+    }
   }
 
   /**

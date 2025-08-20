@@ -1071,6 +1071,14 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
         await this.updateAppHome(userId, client);
         break;
         
+      case "cleanup_thread":
+        await this.handleCleanupAction(userId, githubUsername, channelId, messageTs, client);
+        break;
+        
+      case "create_preview":
+        await this.handleCreatePreviewAction(userId, githubUsername, channelId, messageTs, client);
+        break;
+        
       default:
         // For custom actions, create a new Claude session with the action as a command
         await this.handleCustomAction(actionId, userId, githubUsername, channelId, messageTs, client, body);
@@ -1277,6 +1285,107 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
     
     // Handle the request as a new command
     await this.handleUserRequest(context, command, client);
+  }
+
+  /**
+   * Handle cleanup action - delete worker pod and persistent volume
+   */
+  private async handleCleanupAction(
+    userId: string,
+    _githubUsername: string,
+    channelId: string,
+    messageTs: string,
+    client: any
+  ): Promise<void> {
+    try {
+      // Find the session for this thread
+      const threadTs = messageTs; // Use message as thread identifier
+      const sessionKey = SessionManager.generateSessionKey({
+        platform: "slack",
+        channelId: channelId,
+        userId: userId,
+        userDisplayName: "cleanup",
+        teamId: "",
+        threadTs: threadTs,
+        messageTs: messageTs,
+      });
+
+      // Get the job name for this session
+      const jobName = await this.jobManager.getJobForSession(sessionKey);
+      
+      if (jobName) {
+        // Delete the job (this will also delete the pod)
+        await this.jobManager.deleteJob(jobName);
+        logger.info(`Cleanup: Deleted job ${jobName} for session ${sessionKey}`);
+      }
+
+      // Remove from active sessions
+      this.activeSessions.delete(sessionKey);
+      this.messageReactions.delete(sessionKey);
+
+      // Add checkmark emoji to indicate cleanup completion
+      try {
+        await client.reactions.add({
+          channel: channelId,
+          timestamp: messageTs,
+          name: "white_check_mark",
+        });
+      } catch (reactionError) {
+        logger.error("Failed to add cleanup completion reaction:", reactionError);
+      }
+
+      // Send confirmation message in thread
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        text: "✅ **Cleanup Complete**\n\nWorker pod and associated resources have been deleted.",
+      });
+
+    } catch (error) {
+      logger.error("Error during cleanup action:", error);
+      
+      // Send error message
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: messageTs,
+        text: `❌ **Cleanup Failed**\n\nError: ${error instanceof Error ? error.message : "Unknown error occurred"}`,
+      });
+    }
+  }
+
+  /**
+   * Handle create preview action - create container running make dev
+   */
+  private async handleCreatePreviewAction(
+    userId: string,
+    githubUsername: string,
+    channelId: string,
+    messageTs: string,
+    client: any
+  ): Promise<void> {
+    try {
+      // Create a new Claude session to handle the preview creation
+      const previewCommand = `Run 'make dev' command and show me the first two lines from the container logs. Create a container in the pod to run the make dev command.`;
+      
+      // Post initial message
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: messageTs,
+        text: "🚀 **Creating Preview**\n\nStarting `make dev` command...",
+      });
+
+      await this.createActionWorkerJob(userId, githubUsername, channelId, messageTs, previewCommand, client);
+
+    } catch (error) {
+      logger.error("Error during create preview action:", error);
+      
+      // Send error message
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: messageTs,
+        text: `❌ **Preview Creation Failed**\n\nError: ${error instanceof Error ? error.message : "Unknown error occurred"}`,
+      });
+    }
   }
 
   /**
