@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import * as k8s from "@kubernetes/client-node";
+import { Client } from "pg";
 import logger from "../logger";
 import type { 
   KubernetesConfig,
@@ -341,7 +342,7 @@ export class KubernetesJobManager {
 
     logger.info(`Created user secret: ${secretName} for user ${username}`);
 
-    // Create PostgreSQL user via Job
+    // Create PostgreSQL user directly
     await this.createPostgreSQLUser(username, password);
   }
 
@@ -409,96 +410,88 @@ export class KubernetesJobManager {
   }
 
   /**
-   * Create PostgreSQL user via Kubernetes Job
+   * Create PostgreSQL user directly
    */
   private async createPostgreSQLUser(username: string, password: string): Promise<void> {
-    const jobName = `create-pg-user-${username.replace(/[^a-z0-9]/g, '-')}-${Date.now().toString(36)}`;
-    
-    const job = {
-      apiVersion: "batch/v1",
-      kind: "Job",
-      metadata: {
-        name: jobName,
-        namespace: this.config.namespace,
-        labels: {
-          app: "peerbot",
-          component: "postgresql-user-manager",
-        },
-      },
-      spec: {
-        activeDeadlineSeconds: 300, // 5 minute timeout
-        ttlSecondsAfterFinished: 600, // Clean up after 10 minutes
-        template: {
-          spec: {
-            restartPolicy: "Never",
-            containers: [
-              {
-                name: "create-user",
-                image: "postgres:15-alpine",
-                command: ["/scripts/create-user.sh"],
-                env: [
-                  {
-                    name: "POSTGRES_HOST",
-                    value: `${this.config.namespace.startsWith('peerbot') ? this.config.namespace : 'peerbot'}-postgresql`,
-                  },
-                  {
-                    name: "POSTGRES_PORT",
-                    value: "5432",
-                  },
-                  {
-                    name: "POSTGRES_DB",
-                    value: "conversations",
-                  },
-                  {
-                    name: "POSTGRES_ADMIN_USER",
-                    value: "peerbot",
-                  },
-                  {
-                    name: "POSTGRES_ADMIN_PASSWORD",
-                    valueFrom: {
-                      secretKeyRef: {
-                        name: `${this.config.namespace.startsWith('peerbot') ? this.config.namespace : 'peerbot'}-postgresql-auth`,
-                        key: "postgres-password",
-                      },
-                    },
-                  },
-                  {
-                    name: "NEW_USERNAME",
-                    value: username,
-                  },
-                  {
-                    name: "NEW_PASSWORD",
-                    value: password,
-                  },
-                ],
-                volumeMounts: [
-                  {
-                    name: "user-manager-scripts",
-                    mountPath: "/scripts",
-                  },
-                ],
-              },
-            ],
-            volumes: [
-              {
-                name: "user-manager-scripts",
-                configMap: {
-                  name: `${this.config.namespace.startsWith('peerbot') ? this.config.namespace : 'peerbot'}-postgresql-user-manager`,
-                  defaultMode: 0o755,
-                },
-              },
-            ],
-          },
-        },
-      },
-    };
+    if (!process.env.DATABASE_URL) {
+      throw new Error('DATABASE_URL not configured');
+    }
 
-    await this.k8sApi.createNamespacedJob({
-      namespace: this.config.namespace,
-      body: job
+    const client = new Client({
+      connectionString: process.env.DATABASE_URL,
     });
 
-    logger.info(`Created PostgreSQL user creation job: ${jobName}`);
+    try {
+      await client.connect();
+      logger.info(`Creating PostgreSQL user: ${username}`);
+
+      // Check if user already exists
+      const userExistsResult = await client.query(
+        'SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = $1',
+        [username]
+      );
+
+      if (userExistsResult.rows.length > 0) {
+        logger.info(`PostgreSQL user ${username} already exists`);
+        return;
+      }
+
+      // Create user with limited privileges
+      await client.query(
+        `CREATE ROLE "${username}" WITH LOGIN PASSWORD $1`,
+        [password]
+      );
+
+      // Grant basic database access
+      const dbName = new URL(process.env.DATABASE_URL).pathname.slice(1);
+      await client.query(`GRANT CONNECT ON DATABASE "${dbName}" TO "${username}"`);
+      await client.query(`GRANT USAGE ON SCHEMA public TO "${username}"`);
+      await client.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "${username}"`);
+      await client.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "${username}"`);
+      await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "${username}"`);
+      await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO "${username}"`);
+
+      // Create Row Level Security policies for tenant isolation
+      const tenantId = this.extractTenantIdFromUsername(username);
+      
+      // Policy for conversations table
+      await client.query(
+        `CREATE POLICY "${username}_policy" ON conversations 
+         FOR ALL TO "${username}" 
+         USING (tenant_id = $1)`,
+        [tenantId]
+      );
+
+      // Policy for workspaces table
+      await client.query(
+        `CREATE POLICY "${username}_workspace_policy" ON workspaces 
+         FOR ALL TO "${username}" 
+         USING (tenant_id = $1)`,
+        [tenantId]
+      );
+
+      logger.info(`Successfully created PostgreSQL user: ${username}`);
+    } catch (error) {
+      logger.error(`Failed to create PostgreSQL user ${username}:`, error);
+      throw error;
+    } finally {
+      await client.end();
+    }
+  }
+
+  /**
+   * Extract tenant ID from username for RLS policies
+   */
+  private extractTenantIdFromUsername(username: string): string {
+    // Extract tenant ID from username patterns:
+    // user_U123ABC -> U123ABC
+    // channel_C456DEF -> C456DEF
+    if (username.startsWith('user_')) {
+      return username.substring(5); // Remove 'user_' prefix
+    } else if (username.startsWith('channel_')) {
+      return username.substring(8); // Remove 'channel_' prefix
+    }
+    return username; // fallback
   }
 
   /**
