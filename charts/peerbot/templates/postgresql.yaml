@@ -9,9 +9,9 @@ metadata:
 type: Opaque
 data:
   {{- if .Values.postgresql.external.enabled }}
-  database-url: {{ printf "postgresql://%s:%s@%s:%d/%s" .Values.postgresql.external.username "$(cat /etc/postgresql-password/password)" .Values.postgresql.external.host (.Values.postgresql.external.port | int) .Values.postgresql.external.database | b64enc | quote }}
+  database-url: {{ printf "postgresql://%s:%s@%s:%d/%s" .Values.postgresql.external.username .Values.postgresql.external.password .Values.postgresql.external.host (.Values.postgresql.external.port | int) .Values.postgresql.external.database | b64enc | quote }}
   {{- else }}
-  database-url: {{ printf "postgresql://%s:%s@%s-postgresql:5432/%s" .Values.postgresql.auth.username "$(cat /etc/postgresql-password/password)" (include "peerbot.fullname" .) .Values.postgresql.auth.database | b64enc | quote }}
+  database-url: {{ printf "postgresql://%s:%s@%s-postgresql:5432/%s" .Values.postgresql.auth.username (include "peerbot.postgresql.password" .) (include "peerbot.fullname" .) .Values.postgresql.auth.database | b64enc | quote }}
   {{- end }}
 
 ---
@@ -24,8 +24,8 @@ metadata:
     {{- include "peerbot.labels" . | nindent 4 }}
 type: Opaque
 data:
-  postgres-password: {{ randAlphaNum 32 | b64enc | quote }}
-  password: {{ randAlphaNum 32 | b64enc | quote }}
+  postgres-password: {{ include "peerbot.postgresql.adminPassword" . | b64enc | quote }}
+  password: {{ include "peerbot.postgresql.password" . | b64enc | quote }}
 
 ---
 apiVersion: apps/v1
@@ -66,7 +66,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: {{ include "peerbot.fullname" . }}-postgresql-auth
-              key: password
+              key: postgres-password
         - name: PGDATA
           value: /var/lib/postgresql/data/pgdata
         resources:

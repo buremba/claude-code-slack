@@ -130,6 +130,7 @@ export class PostgreSQLConversationHistorySync implements ConversationHistorySyn
   private async ensureWorkspaceExists(tenantId: string, tenantType: 'slack' | 'discord' | 'teams' = 'slack'): Promise<void> {
     const client = await this.pool.connect();
     try {
+      // Note: With RLS enabled, users can only insert/access workspaces matching their tenant pattern
       await client.query(
         `INSERT INTO workspaces (tenant_type, tenant_id, display_name) 
          VALUES ($1, $2, $3) 

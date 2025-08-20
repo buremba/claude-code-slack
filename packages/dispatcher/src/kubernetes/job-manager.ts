@@ -241,6 +241,9 @@ export class KubernetesJobManager {
         return existingJob;
       }
 
+      // Create user-specific PostgreSQL credentials if DATABASE_URL is configured
+      await this.ensureUserCredentials(request.userId, request.channelId);
+
       // Create job manifest
       const jobManifest = this.createJobManifest(jobName, request);
 
@@ -267,6 +270,207 @@ export class KubernetesJobManager {
         error as Error
       );
     }
+  }
+
+  /**
+   * Ensure user-specific PostgreSQL credentials exist
+   */
+  private async ensureUserCredentials(userId: string, channelId: string): Promise<void> {
+    // Only create user credentials if DATABASE_URL is configured
+    if (!process.env.DATABASE_URL) {
+      return;
+    }
+
+    const secretName = this.getUserSecretName(userId, channelId);
+    
+    try {
+      // Check if secret already exists
+      await this.k8sCoreApi.readNamespacedSecret({
+        name: secretName,
+        namespace: this.config.namespace
+      });
+      logger.info(`User secret already exists: ${secretName}`);
+      return;
+    } catch (error) {
+      // Secret doesn't exist, create it
+      if ((error as any).response?.statusCode !== 404) {
+        throw error;
+      }
+    }
+
+    // Generate credentials
+    const username = this.generateDbUsername(userId, channelId);
+    const password = this.generateSecurePassword();
+    
+    // Create user-specific secret
+    const secret = {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: {
+        name: secretName,
+        namespace: this.config.namespace,
+        labels: {
+          app: "peerbot",
+          component: "postgresql-user",
+          "user-id": userId,
+          "channel-id": channelId,
+        },
+        annotations: {
+          "peerbot.ai/user-id": userId,
+          "peerbot.ai/channel-id": channelId,
+          "peerbot.ai/created-at": new Date().toISOString(),
+        },
+      },
+      type: "Opaque",
+      data: {
+        username: Buffer.from(username).toString("base64"),
+        password: Buffer.from(password).toString("base64"),
+        "database-url": Buffer.from(this.buildUserDatabaseUrl(username, password)).toString("base64"),
+      },
+    };
+
+    await this.k8sCoreApi.createNamespacedSecret({
+      namespace: this.config.namespace,
+      body: secret
+    });
+
+    logger.info(`Created user secret: ${secretName} for user ${username}`);
+
+    // Create PostgreSQL user via Job
+    await this.createPostgreSQLUser(username, password);
+  }
+
+  /**
+   * Generate database username from user and channel IDs
+   */
+  private generateDbUsername(userId: string, channelId: string): string {
+    // Sanitize IDs for PostgreSQL username requirements
+    const sanitizedUserId = userId.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 32);
+    const sanitizedChannelId = channelId.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 32);
+    return `user_${sanitizedUserId}_${sanitizedChannelId}`.substring(0, 63);
+  }
+
+  /**
+   * Generate secure password
+   */
+  private generateSecurePassword(): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    for (let i = 0; i < 32; i++) {
+      result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+  }
+
+  /**
+   * Get secret name for user credentials
+   */
+  private getUserSecretName(userId: string, channelId: string): string {
+    const sanitized = `${userId}-${channelId}`.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+    return `peerbot-postgresql-user-${sanitized}`.substring(0, 253);
+  }
+
+  /**
+   * Build database URL for specific user
+   */
+  private buildUserDatabaseUrl(username: string, password: string): string {
+    // Parse the admin DATABASE_URL to get connection details
+    const adminDbUrl = process.env.DATABASE_URL!;
+    const url = new URL(adminDbUrl);
+    return `postgresql://${encodeURIComponent(username)}:${encodeURIComponent(password)}@${url.host}${url.pathname}`;
+  }
+
+  /**
+   * Create PostgreSQL user via Kubernetes Job
+   */
+  private async createPostgreSQLUser(username: string, password: string): Promise<void> {
+    const jobName = `create-pg-user-${username.replace(/[^a-z0-9]/g, '-')}-${Date.now().toString(36)}`;
+    
+    const job = {
+      apiVersion: "batch/v1",
+      kind: "Job",
+      metadata: {
+        name: jobName,
+        namespace: this.config.namespace,
+        labels: {
+          app: "peerbot",
+          component: "postgresql-user-manager",
+        },
+      },
+      spec: {
+        activeDeadlineSeconds: 300, // 5 minute timeout
+        ttlSecondsAfterFinished: 600, // Clean up after 10 minutes
+        template: {
+          spec: {
+            restartPolicy: "Never",
+            containers: [
+              {
+                name: "create-user",
+                image: "postgres:15-alpine",
+                command: ["/scripts/create-user.sh"],
+                env: [
+                  {
+                    name: "POSTGRES_HOST",
+                    value: `${this.config.namespace.startsWith('peerbot') ? this.config.namespace : 'peerbot'}-postgresql`,
+                  },
+                  {
+                    name: "POSTGRES_PORT",
+                    value: "5432",
+                  },
+                  {
+                    name: "POSTGRES_DB",
+                    value: "conversations",
+                  },
+                  {
+                    name: "POSTGRES_ADMIN_USER",
+                    value: "peerbot",
+                  },
+                  {
+                    name: "POSTGRES_ADMIN_PASSWORD",
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: `${this.config.namespace.startsWith('peerbot') ? this.config.namespace : 'peerbot'}-postgresql-auth`,
+                        key: "postgres-password",
+                      },
+                    },
+                  },
+                  {
+                    name: "NEW_USERNAME",
+                    value: username,
+                  },
+                  {
+                    name: "NEW_PASSWORD",
+                    value: password,
+                  },
+                ],
+                volumeMounts: [
+                  {
+                    name: "user-manager-scripts",
+                    mountPath: "/scripts",
+                  },
+                ],
+              },
+            ],
+            volumes: [
+              {
+                name: "user-manager-scripts",
+                configMap: {
+                  name: `${this.config.namespace.startsWith('peerbot') ? this.config.namespace : 'peerbot'}-postgresql-user-manager`,
+                  defaultMode: 0o755,
+                },
+              },
+            ],
+          },
+        },
+      },
+    };
+
+    await this.k8sApi.createNamespacedJob({
+      namespace: this.config.namespace,
+      body: job
+    });
+
+    logger.info(`Created PostgreSQL user creation job: ${jobName}`);
   }
 
   /**
@@ -454,7 +658,7 @@ export class KubernetesJobManager {
                     name: "DATABASE_URL",
                     valueFrom: {
                       secretKeyRef: {
-                        name: "peerbot-secrets",
+                        name: this.getUserSecretName(templateData.userId, templateData.channelId),
                         key: "database-url",
                         optional: true,
                       },
