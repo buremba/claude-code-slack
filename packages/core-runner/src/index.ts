@@ -165,3 +165,13 @@ export type {
 export { SessionManager } from "./session-manager";
 export { runClaudeWithProgress } from "./claude-execution";
 export { createPromptFile } from "./prompt-generation";
+
+// Export conversation history sync interfaces and implementations
+export type {
+  ConversationHistorySync,
+  ConversationHistoryEntry,
+  WorkspaceEntry
+} from "./conversation-history-sync";
+export { createConversationHistorySync } from "./conversation-history-sync";
+export { PostgreSQLConversationHistorySync } from "./postgresql-conversation-history-sync";
+export { FileCopyConversationHistorySync } from "./file-copy-conversation-history-sync";

@@ -100,7 +100,44 @@ slack:
 github:
   organization: "peerbot-community"
 
-# Storage: Using in-memory session storage only
+# PostgreSQL configuration
+postgresql:
+  # Enable PostgreSQL for conversation persistence
+  enabled: false
+  
+  # When enabled, creates a PostgreSQL instance
+  auth:
+    username: peerbot
+    database: conversations
+    # Password will be generated or set via secret
+  
+  # Resource configuration
+  primary:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    
+    persistence:
+      enabled: true
+      size: 8Gi
+      storageClass: ""
+  
+  # External PostgreSQL configuration (alternative to embedded)
+  external:
+    enabled: false
+    host: ""
+    port: 5432
+    database: conversations
+    username: peerbot
+    # Use existingSecret or create secret manually
+    existingSecret: ""
+    existingSecretPasswordKey: password
+
+# Storage: Using in-memory session storage by default, PostgreSQL when enabled
 
 # Claude configuration
 claude:

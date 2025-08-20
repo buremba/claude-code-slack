@@ -1,0 +1,132 @@
+{{- if .Values.postgresql.enabled }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "peerbot.fullname" . }}-postgresql
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+type: Opaque
+data:
+  {{- if .Values.postgresql.external.enabled }}
+  database-url: {{ printf "postgresql://%s:%s@%s:%d/%s" .Values.postgresql.external.username "$(cat /etc/postgresql-password/password)" .Values.postgresql.external.host (.Values.postgresql.external.port | int) .Values.postgresql.external.database | b64enc | quote }}
+  {{- else }}
+  database-url: {{ printf "postgresql://%s:%s@%s-postgresql:5432/%s" .Values.postgresql.auth.username "$(cat /etc/postgresql-password/password)" (include "peerbot.fullname" .) .Values.postgresql.auth.database | b64enc | quote }}
+  {{- end }}
+
+---
+{{- if not .Values.postgresql.external.enabled }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "peerbot.fullname" . }}-postgresql-auth
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+type: Opaque
+data:
+  postgres-password: {{ randAlphaNum 32 | b64enc | quote }}
+  password: {{ randAlphaNum 32 | b64enc | quote }}
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "peerbot.fullname" . }}-postgresql
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  serviceName: {{ include "peerbot.fullname" . }}-postgresql
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "peerbot.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        {{- include "peerbot.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: database
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: postgresql
+        image: postgres:15-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5432
+          name: postgresql
+        env:
+        - name: POSTGRES_USER
+          value: {{ .Values.postgresql.auth.username | quote }}
+        - name: POSTGRES_DB
+          value: {{ .Values.postgresql.auth.database | quote }}
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "peerbot.fullname" . }}-postgresql-auth
+              key: password
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        resources:
+          {{- toYaml .Values.postgresql.primary.resources | nindent 10 }}
+        volumeMounts:
+        - name: postgresql-data
+          mountPath: /var/lib/postgresql/data
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - exec pg_isready -U {{ .Values.postgresql.auth.username | quote }} -d {{ .Values.postgresql.auth.database | quote }} -h 127.0.0.1 -p 5432
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - exec pg_isready -U {{ .Values.postgresql.auth.username | quote }} -d {{ .Values.postgresql.auth.database | quote }} -h 127.0.0.1 -p 5432
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+  volumeClaimTemplates:
+  - metadata:
+      name: postgresql-data
+      labels:
+        {{- include "peerbot.labels" . | nindent 8 }}
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      {{- if .Values.postgresql.primary.persistence.storageClass }}
+      storageClassName: {{ .Values.postgresql.primary.persistence.storageClass | quote }}
+      {{- end }}
+      resources:
+        requests:
+          storage: {{ .Values.postgresql.primary.persistence.size | quote }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "peerbot.fullname" . }}-postgresql
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5432
+    targetPort: postgresql
+    protocol: TCP
+    name: postgresql
+  selector:
+    {{- include "peerbot.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+{{- end }}
+{{- end }}

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { ClaudeSessionRunner } from "@claude-code-slack/core-runner";
+import { ClaudeSessionRunner, createConversationHistorySync } from "@claude-code-slack/core-runner";
 import { WorkspaceManager } from "./workspace-setup";
 import { SlackIntegration } from "./slack-integration";
 import { SlackTokenManager } from "./slack/token-manager";
@@ -18,6 +18,7 @@ export class ClaudeWorker {
   private config: WorkerConfig;
   private tokenManager?: SlackTokenManager;
   private autoPushInterval?: NodeJS.Timeout;
+  private conversationHistorySync = createConversationHistorySync();
 
   constructor(config: WorkerConfig) {
     this.config = config;
@@ -157,14 +158,16 @@ export class ClaudeWorker {
    */
   private async saveSessionMapping(claudeSessionId: string): Promise<void> {
     try {
-      const fs = await import('fs').then(m => m.promises);
-      const path = await import('path');
+      // Extract tenant ID from environment or config
+      const tenantId = this.extractTenantId();
       
-      const sessionDir = path.join('/workspace', this.config.username, '.claude', 'projects', this.config.username);
-      await fs.mkdir(sessionDir, { recursive: true });
-      
-      const mappingFile = path.join(sessionDir, `${this.config.sessionKey}.mapping`);
-      await fs.writeFile(mappingFile, claudeSessionId, 'utf8');
+      await this.conversationHistorySync.saveSessionMapping(
+        this.config.sessionKey,
+        claudeSessionId,
+        tenantId,
+        this.config.userId,
+        process.env.SLACK_BOT_ID // botId
+      );
       
       logger.info(`Saved session mapping: ${this.config.sessionKey} -> ${claudeSessionId}`);
     } catch (error) {
@@ -173,12 +176,19 @@ export class ClaudeWorker {
   }
 
   /**
+   * Extract tenant ID from config/environment
+   */
+  private extractTenantId(): string {
+    // Extract Slack workspace/team ID from environment or use fallback
+    return process.env.SLACK_TEAM_ID || process.env.SLACK_WORKSPACE_ID || 'default-workspace';
+  }
+
+  /**
    * Sync conversation files - copy the current session's JSONL file from ~/.claude/projects
    */
   private async syncConversationFiles(): Promise<void> {
     try {
       const fs = await import('fs').then(m => m.promises);
-      const path = await import('path');
       
       logger.info("Syncing conversation file for current session...");
       
@@ -217,44 +227,33 @@ export class ClaudeWorker {
       // Save session mapping for future resumption
       await this.saveSessionMapping(sessionId);
       
-      // Paths for the conversation file
-      const homeClaudeDir = '/home/claude/.claude/projects';
-      const workspaceDir = `/workspace/${this.config.username}`;
-      const workspaceName = this.config.username;
-      const sessionFile = `${sessionId}.jsonl`;
+      // Extract tenant ID
+      const tenantId = this.extractTenantId();
       
-      const srcPath = path.join(homeClaudeDir, workspaceName, sessionFile);
-      const destDir = path.join(workspaceDir, '.claude', 'projects');
-      const destPath = path.join(destDir, sessionFile);
+      // Sync conversation files using the interface
+      await this.conversationHistorySync.syncConversationFiles(
+        this.config.sessionKey,
+        sessionId,
+        tenantId,
+        this.config.userId,
+        process.env.SLACK_BOT_ID // botId
+      );
       
-      logger.info(`Copying conversation file from ${srcPath} to ${destPath}`);
+      logger.info(`Successfully synced conversation using ${process.env.DATABASE_URL ? 'PostgreSQL' : 'FileCopy'} implementation`);
       
-      // Check if source file exists
-      try {
-        await fs.access(srcPath);
-      } catch {
-        logger.info(`No conversation file found at ${srcPath}`);
-        return;
-      }
-      
-      // Ensure destination directory exists
-      await fs.mkdir(destDir, { recursive: true });
-      
-      // Copy the conversation file
-      await fs.copyFile(srcPath, destPath);
-      logger.info(`Successfully synced conversation file: ${sessionFile}`);
-      
-      // Commit the conversation file
-      try {
-        const status = await this.workspaceManager.getRepositoryStatus();
-        if (status.hasChanges) {
-          await this.workspaceManager.commitAndPush(
-            `Save conversation: ${sessionFile}`
-          );
-          logger.info(`Committed conversation file to repository`);
+      // For FileCopy implementation, also commit changes to repository
+      if (!process.env.DATABASE_URL) {
+        try {
+          const status = await this.workspaceManager.getRepositoryStatus();
+          if (status.hasChanges) {
+            await this.workspaceManager.commitAndPush(
+              `Save conversation: ${sessionId}.jsonl`
+            );
+            logger.info(`Committed conversation file to repository`);
+          }
+        } catch (error) {
+          logger.warn("Failed to commit conversation file:", error);
         }
-      } catch (error) {
-        logger.warn("Failed to commit conversation file:", error);
       }
       
     } catch (error) {
@@ -620,6 +619,11 @@ ${this.getMakeTargetsSummary()}
       
       // Cleanup workspace (this also does a final commit/push)
       await this.workspaceManager.cleanup();
+      
+      // Cleanup conversation history sync
+      if (this.conversationHistorySync.cleanup) {
+        await this.conversationHistorySync.cleanup();
+      }
       
       logger.info("Worker cleanup completed");
     } catch (error) {

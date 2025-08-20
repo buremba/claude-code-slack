@@ -9,7 +9,7 @@ import type {
   ThreadSession,
   WorkerJobRequest
 } from "../types";
-import { SessionManager } from "@claude-code-slack/core-runner";
+import { SessionManager, createConversationHistorySync } from "@claude-code-slack/core-runner";
 import logger from "../logger";
 
 export class SlackEventHandlers {
@@ -20,6 +20,7 @@ export class SlackEventHandlers {
   private repositoryCache = new Map<string, { repository: any; timestamp: number }>(); // username -> {repository, timestamp}
   private sessionMappings = new Map<string, string>(); // sessionKey -> claudeSessionId
   private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache TTL
+  private conversationHistorySync = createConversationHistorySync(); // New interface implementation
 
   constructor(
     private app: App,
@@ -642,25 +643,19 @@ export class SlackEventHandlers {
         return cached;
       }
       
-      const path = await import('path');
-      const fs = await import('fs').then(m => m.promises);
+      // Use the conversation history sync interface
+      // For Slack, tenantId is the team/workspace ID, but we'll use a fallback for now
+      const tenantId = this.extractTenantId() || 'default-workspace';
+      const claudeSessionId = await this.conversationHistorySync.loadSessionMapping(sessionKey, tenantId);
       
-      const mappingFile = path.join(process.cwd(), '.claude', 'projects', username, `${sessionKey}.mapping`);
-      
-      try {
-        const claudeSessionId = await fs.readFile(mappingFile, 'utf8');
-        
+      if (claudeSessionId) {
         // Cache in memory
-        this.sessionMappings.set(sessionKey, claudeSessionId.trim());
-        
-        logger.info(`Loaded session mapping: ${sessionKey} -> ${claudeSessionId.trim()}`);
-        return claudeSessionId.trim();
-      } catch (error) {
-        if ((error as any).code !== 'ENOENT') {
-          logger.error(`Failed to read session mapping file for ${sessionKey}:`, error);
-        }
-        return undefined;
+        this.sessionMappings.set(sessionKey, claudeSessionId);
+        logger.info(`Loaded session mapping: ${sessionKey} -> ${claudeSessionId}`);
+        return claudeSessionId;
       }
+      
+      return undefined;
     } catch (error) {
       logger.error(`Failed to load session mapping for ${sessionKey}:`, error);
       return undefined;
@@ -1968,6 +1963,15 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
   }
 
   /**
+   * Extract tenant ID from context (Slack workspace ID)
+   */
+  private extractTenantId(): string | undefined {
+    // In a real implementation, this would extract the Slack workspace ID from the current context
+    // For now, we'll use an environment variable or fallback
+    return process.env.SLACK_TEAM_ID || process.env.SLACK_WORKSPACE_ID;
+  }
+
+  /**
    * Cleanup all sessions
    */
   async cleanup(): Promise<void> {
@@ -1975,5 +1979,10 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
     this.activeSessions.clear();
     this.userMappings.clear();
     this.repositoryCache.clear();
+    
+    // Cleanup conversation history sync
+    if (this.conversationHistorySync.cleanup) {
+      await this.conversationHistorySync.cleanup();
+    }
   }
 }

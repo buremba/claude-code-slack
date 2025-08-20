@@ -449,6 +449,17 @@ export class KubernetesJobManager {
                     name: "CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS",
                     value: "1",
                   },
+                  // Optional PostgreSQL database URL for conversation persistence
+                  ...(process.env.DATABASE_URL ? [{
+                    name: "DATABASE_URL",
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: "peerbot-secrets",
+                        key: "database-url",
+                        optional: true,
+                      },
+                    },
+                  }] : []),
                 ],
                 volumeMounts: [
                   {
