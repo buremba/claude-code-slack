@@ -26,7 +26,7 @@ interface ContainerTemplateData {
 
 interface PodKey {
   userId: string;
-  channelId: string;
+  threadTs: string;
 }
 
 export class ClaudeSessionController {
@@ -79,18 +79,18 @@ export class ClaudeSessionController {
         return;
       }
 
-      // Generate pod key for user/channel combination
-      const podKey = this.generatePodKey(resource.spec.userId, resource.spec.channelId);
+      // Generate pod key for user/thread combination
+      const podKey = this.generatePodKey(resource.spec.userId, resource.spec.threadTs || "");
       
-      // Check if pod already exists for this user/channel
+      // Check if pod already exists for this user/thread
       const existingPod = await this.findExistingPod(podKey);
       
       if (existingPod) {
-        // Add container to existing pod for concurrent message
+        // Add container to existing pod for concurrent message in same thread
         const containerName = await this.addContainerToPod(existingPod, resource);
         await this.updateStatus(resource, "Running", `Added container ${containerName} to existing pod ${existingPod.metadata?.name}`, existingPod.metadata?.name, containerName);
       } else {
-        // Create new pod for this user/channel
+        // Create new pod for this user/thread
         const { pod, containerName } = await this.createPodWithContainer(podKey, resource);
         await this.updateStatus(resource, "Running", `Created pod ${pod.metadata?.name} with container ${containerName}`, pod.metadata?.name, containerName);
       }
@@ -166,10 +166,10 @@ export class ClaudeSessionController {
   }
 
   /**
-   * Generate pod key for user/channel combination
+   * Generate pod key for user/thread combination
    */
-  private generatePodKey(userId: string, channelId: string): PodKey {
-    return { userId, channelId };
+  private generatePodKey(userId: string, threadTs: string): PodKey {
+    return { userId, threadTs };
   }
 
   /**
@@ -177,12 +177,12 @@ export class ClaudeSessionController {
    */
   private generatePodName(podKey: PodKey): string {
     const safeUserId = podKey.userId.replace(/[^a-z0-9]/gi, "-").toLowerCase();
-    const safeChannelId = podKey.channelId.replace(/[^a-z0-9]/gi, "-").toLowerCase();
-    return `claude-worker-${safeUserId}-${safeChannelId}`;
+    const safeThreadTs = podKey.threadTs.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+    return `peerbot-worker-user-${safeUserId}-${safeThreadTs}`;
   }
 
   /**
-   * Find existing pod for a user/channel combination
+   * Find existing pod for a user/thread combination
    */
   private async findExistingPod(podKey: PodKey): Promise<k8s.V1Pod | null> {
     try {
@@ -204,7 +204,7 @@ export class ClaudeSessionController {
       if ((error as any).statusCode === 404) {
         return null; // Pod doesn't exist
       }
-      this.logger.error(`Error finding existing pod for user ${podKey.userId} channel ${podKey.channelId}:`, error);
+      this.logger.error(`Error finding existing pod for user ${podKey.userId} thread ${podKey.threadTs}:`, error);
       return null;
     }
   }
@@ -271,11 +271,13 @@ export class ClaudeSessionController {
           app: "claude-worker",
           "user-id": spec.userId,
           "channel-id": spec.channelId,
+          "thread-ts": spec.threadTs || "",
           component: "worker",
         },
         annotations: {
           "claude.ai/user-id": spec.userId,
           "claude.ai/channel-id": spec.channelId,
+          "claude.ai/thread-ts": spec.threadTs || "",
           "claude.ai/username": spec.username,
           "claude.ai/created-at": new Date().toISOString(),
         },
