@@ -5,6 +5,7 @@ global:
 
 dispatcher:
   replicaCount: 1
+  useOperator: true  # Use operator by default in dev
   image:
     repository: peerbot-dispatcher
     pullPolicy: IfNotPresent
@@ -145,3 +146,18 @@ securityContext:
 
 workerNodeSelector: {}
 workerTolerations: []
+
+# Enable operator for local development
+operator:
+  enabled: true
+  image:
+    repository: claude-operator
+    tag: ""  # Skaffold will manage this
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi

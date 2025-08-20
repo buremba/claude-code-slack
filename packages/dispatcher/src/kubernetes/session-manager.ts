@@ -2,7 +2,8 @@ import * as k8s from "@kubernetes/client-node";
 import logger from "../logger";
 import type { 
   KubernetesConfig,
-  WorkerJobRequest
+  WorkerJobRequest,
+  JobManager
 } from "../types";
 import { KubernetesError } from "../types";
 
@@ -44,7 +45,7 @@ interface ClaudeSession {
   };
 }
 
-export class ClaudeSessionManager {
+export class ClaudeSessionManager implements JobManager {
   private customObjectsApi: k8s.CustomObjectsApi;
   private k8sCoreApi: k8s.CoreV1Api;
   private k8sApi: k8s.BatchV1Api;

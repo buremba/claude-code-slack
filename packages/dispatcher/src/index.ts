@@ -8,12 +8,12 @@ import { KubernetesJobManager } from "./kubernetes/job-manager";
 import { ClaudeSessionManager } from "./kubernetes/session-manager";
 import { GitHubRepositoryManager } from "./github/repository-manager";
 import { setupHealthEndpoints } from "./simple-http";
-import type { DispatcherConfig } from "./types";
+import type { DispatcherConfig, JobManager } from "./types";
 import logger from "./logger";
 
 export class SlackDispatcher {
   private app: App;
-  private jobManager: KubernetesJobManager | ClaudeSessionManager;
+  private jobManager: JobManager;
   private repoManager: GitHubRepositoryManager;
   private config: DispatcherConfig;
 
@@ -62,13 +62,12 @@ export class SlackDispatcher {
       logger.info("Initialized Slack app in Socket mode");
     }
 
-    // Initialize managers - choose based on USE_CLAUDE_OPERATOR flag
-    const useOperator = process.env.USE_CLAUDE_OPERATOR === "true";
-    if (useOperator) {
+    // Initialize job manager based on configuration
+    if (config.useOperator) {
       logger.info("✅ Using Claude Operator for session management");
       this.jobManager = new ClaudeSessionManager(config.kubernetes);
     } else {
-      logger.info("✅ Using legacy KubernetesJobManager for session management");
+      logger.info("✅ Using direct Kubernetes job management");
       this.jobManager = new KubernetesJobManager(config.kubernetes);
     }
     
@@ -350,6 +349,7 @@ async function main() {
       },
       sessionTimeoutMinutes: parseInt(process.env.SESSION_TIMEOUT_MINUTES || "5"),
       logLevel: process.env.LOG_LEVEL as any || LogLevel.INFO,
+      useOperator: process.env.USE_CLAUDE_OPERATOR === "true",
     };
 
     // Validate required configuration

@@ -9,7 +9,7 @@ global:
 # Dispatcher (Slack event handler) configuration
 dispatcher:
   replicaCount: 1
-  useOperator: false  # Set to true to use Claude Operator instead of direct job management
+  useOperator: false  # Set to true to use Claude Operator instead of direct job management (recommended)
   
   image:
     repository: peerbot-dispatcher

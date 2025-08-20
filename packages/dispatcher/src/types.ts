@@ -41,6 +41,7 @@ export interface DispatcherConfig {
   claude: Partial<ClaudeExecutionOptions>;
   sessionTimeoutMinutes: number;
   logLevel?: LogLevel;
+  useOperator?: boolean; // Use Claude Operator instead of direct job management
 }
 
 export interface SlackContext {
@@ -67,6 +68,18 @@ export interface WorkerJobRequest {
   originalMessageTs?: string; // Original user message timestamp for reactions
   claudeOptions: ClaudeExecutionOptions;
   resumeSessionId?: string; // Claude session ID to resume from
+}
+
+// Common interface for job/session managers
+export interface JobManager {
+  createWorkerJob(request: WorkerJobRequest): Promise<string>;
+  getJobStatus(jobName: string): Promise<string>;
+  getJobForSession(sessionKey: string): Promise<string | null>;
+  getJobLogs(jobName: string): Promise<string | null>;
+  deleteJob(jobName: string): Promise<void>;
+  listActiveJobs(): Promise<Array<{ name: string; sessionKey: string; status: string }>>;
+  getActiveJobCount(): number;
+  cleanup(): Promise<void>;
 }
 
 export interface ThreadSession {
