@@ -423,7 +423,7 @@ export class SlackEventHandlers {
       const isFollowUpMessage = context.threadTs && context.threadTs !== context.messageTs;
       
       if (isFollowUpMessage) {
-        existingClaudeSessionId = await this.loadSessionMapping(username, sessionKey);
+        existingClaudeSessionId = await this.loadSessionMapping(username, sessionKey, context);
         if (existingClaudeSessionId) {
           logger.info(`Session ${sessionKey} - resuming Claude session: ${existingClaudeSessionId}`);
         } else {
@@ -635,7 +635,7 @@ export class SlackEventHandlers {
   /**
    * Load Claude session ID for thread
    */
-  private async loadSessionMapping(username: string, sessionKey: string): Promise<string | undefined> {
+  private async loadSessionMapping(username: string, sessionKey: string, context: SlackContext): Promise<string | undefined> {
     try {
       // Check memory cache first
       const cached = this.sessionMappings.get(sessionKey);
@@ -644,8 +644,8 @@ export class SlackEventHandlers {
       }
       
       // Use the conversation history sync interface
-      // For Slack, tenantId is the team/workspace ID, but we'll use a fallback for now
-      const tenantId = this.extractTenantId() || 'default-workspace';
+      // Extract tenantId based on conversation context (channelId for channels, userId for DMs)
+      const tenantId = this.extractTenantId(context) || 'default-workspace';
       const claudeSessionId = await this.conversationHistorySync.loadSessionMapping(sessionKey, tenantId);
       
       if (claudeSessionId) {
@@ -1963,12 +1963,27 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
   }
 
   /**
-   * Extract tenant ID from context (Slack workspace ID)
+   * Extract tenant ID based on current conversation context
+   * - For channel conversations: use channelId
+   * - For direct messages: use userId
+   * Note: This needs context passed to it, so it's not used in current implementation
    */
-  private extractTenantId(): string | undefined {
-    // In a real implementation, this would extract the Slack workspace ID from the current context
-    // For now, we'll use an environment variable or fallback
-    return process.env.SLACK_TEAM_ID || process.env.SLACK_WORKSPACE_ID;
+  private extractTenantId(context?: { channelId: string; userId: string }): string | undefined {
+    if (!context) {
+      // Fallback for cases where context is not available
+      return process.env.SLACK_TEAM_ID || process.env.SLACK_WORKSPACE_ID;
+    }
+    
+    // Determine if this is a DM or channel based on channelId format
+    const isDM = context.channelId.startsWith('D');
+    
+    if (isDM) {
+      // For DMs, use the user ID as tenant
+      return context.userId;
+    } else {
+      // For channels, use the channel ID as tenant
+      return context.channelId;
+    }
   }
 
   /**

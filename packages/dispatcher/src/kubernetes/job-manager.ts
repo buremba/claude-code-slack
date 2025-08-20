@@ -302,6 +302,9 @@ export class KubernetesJobManager {
     const username = this.generateDbUsername(userId, channelId);
     const password = this.generateSecurePassword();
     
+    // Determine if this is a DM or channel for metadata
+    const isDM = channelId.startsWith('D');
+    
     // Create user-specific secret
     const secret = {
       apiVersion: "v1",
@@ -312,12 +315,14 @@ export class KubernetesJobManager {
         labels: {
           app: "peerbot",
           component: "postgresql-user",
-          "user-id": userId,
-          "channel-id": channelId,
+          "conversation-type": isDM ? "direct-message" : "channel",
+          ...(isDM ? { "user-id": userId } : { "channel-id": channelId }),
         },
         annotations: {
+          "peerbot.ai/conversation-type": isDM ? "direct-message" : "channel",
           "peerbot.ai/user-id": userId,
           "peerbot.ai/channel-id": channelId,
+          "peerbot.ai/db-username": username,
           "peerbot.ai/created-at": new Date().toISOString(),
         },
       },
@@ -341,13 +346,24 @@ export class KubernetesJobManager {
   }
 
   /**
-   * Generate database username from user and channel IDs
+   * Generate database username based on conversation context
+   * - For channel conversations: channel_{channelId}
+   * - For direct messages: user_{userId}
    */
   private generateDbUsername(userId: string, channelId: string): string {
-    // Sanitize IDs for PostgreSQL username requirements
-    const sanitizedUserId = userId.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 32);
-    const sanitizedChannelId = channelId.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 32);
-    return `user_${sanitizedUserId}_${sanitizedChannelId}`.substring(0, 63);
+    // Determine if this is a DM or channel based on channelId format
+    // Slack DM channels start with 'D' and group channels start with 'C'
+    const isDM = channelId.startsWith('D');
+    
+    if (isDM) {
+      // For DMs, use user-based naming
+      const sanitizedUserId = userId.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
+      return `user_${sanitizedUserId}`.substring(0, 63);
+    } else {
+      // For channels, use channel-based naming
+      const sanitizedChannelId = channelId.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
+      return `channel_${sanitizedChannelId}`.substring(0, 63);
+    }
   }
 
   /**
@@ -363,11 +379,23 @@ export class KubernetesJobManager {
   }
 
   /**
-   * Get secret name for user credentials
+   * Get secret name for user credentials based on conversation context
+   * - For channel conversations: peerbot-postgresql-channel-{channelId}
+   * - For direct messages: peerbot-postgresql-user-{userId}
    */
   private getUserSecretName(userId: string, channelId: string): string {
-    const sanitized = `${userId}-${channelId}`.replace(/[^a-z0-9]/gi, '-').toLowerCase();
-    return `peerbot-postgresql-user-${sanitized}`.substring(0, 253);
+    // Determine if this is a DM or channel based on channelId format
+    const isDM = channelId.startsWith('D');
+    
+    if (isDM) {
+      // For DMs, use user-based naming
+      const sanitized = userId.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+      return `peerbot-postgresql-user-${sanitized}`.substring(0, 253);
+    } else {
+      // For channels, use channel-based naming
+      const sanitized = channelId.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+      return `peerbot-postgresql-channel-${sanitized}`.substring(0, 253);
+    }
   }
 
   /**
