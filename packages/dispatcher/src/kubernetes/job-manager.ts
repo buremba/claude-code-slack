@@ -463,8 +463,8 @@ export class KubernetesJobManager {
             volumes: [
               {
                 name: "workspace",
-                emptyDir: {
-                  sizeLimit: "10Gi",
+                persistentVolumeClaim: {
+                  claimName: "peerbot-worker-pvc",
                 },
               },
             ],
