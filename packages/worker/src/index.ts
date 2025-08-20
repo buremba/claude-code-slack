@@ -182,7 +182,7 @@ export class ClaudeWorker {
           },
           {
             type: "mrkdwn",
-            text: `📂 ./`
+            text: `📂 ${this.workspaceManager.getRelativeWorkingDirectory()}`
           }
         ]
       };
@@ -225,7 +225,7 @@ export class ClaudeWorker {
           },
           {
             type: "mrkdwn",
-            text: `📂 ./`
+            text: `📂 ${this.workspaceManager.getRelativeWorkingDirectory()}`
           }
         ]
       };
@@ -439,7 +439,7 @@ docker build -t myapp .
 - Forms without action metadata will NOT work properly
 
 **Environment:**
-- Working dir: ./  
+- Working dir: ${this.workspaceManager.getRelativeWorkingDirectory()}
 - Repo: ${this.config.repositoryUrl}
 - Session: ${this.config.sessionKey}
 - Makefile directories and targets (indicating projects):

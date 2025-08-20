@@ -333,6 +333,38 @@ export class WorkspaceManager {
   }
 
   /**
+   * Get current working directory relative to project root
+   */
+  getRelativeWorkingDirectory(): string {
+    if (!this.workspaceInfo?.userDirectory) {
+      return "./";
+    }
+    
+    try {
+      // Get the current working directory from process.cwd() relative to the project root
+      const currentDir = process.cwd();
+      const projectRoot = this.workspaceInfo.userDirectory;
+      
+      // If we're at the project root, return "./"
+      if (currentDir === projectRoot) {
+        return "./";
+      }
+      
+      // If we're inside the project, return relative path
+      if (currentDir.startsWith(projectRoot)) {
+        const relativePath = currentDir.substring(projectRoot.length + 1);
+        return `./${relativePath}`;
+      }
+      
+      // If we're outside the project, just return the directory name
+      return "./";
+    } catch (error) {
+      // Fallback to default
+      return "./";
+    }
+  }
+
+  /**
    * Create a new branch for the session
    */
   async createSessionBranch(sessionKey: string): Promise<string> {
