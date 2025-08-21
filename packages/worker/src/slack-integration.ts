@@ -136,17 +136,23 @@ export class SlackIntegration {
       logger.info(`performUpdate called with content length: ${content.length}`);
       logger.info(`Response channel: ${this.responseChannel}, TS: ${this.responseTs}`);
       
-      // Convert markdown to Slack format with blocks support
-      const slackMessage = markdownToSlackWithBlocks(content);
-      
-      // Build blocks array with context header if available
-      let blocks: any[] = [];
-      
-      // Add context block if it exists (preserve it from dispatcher)
-      if (this.contextBlock) {
-        blocks.push(this.contextBlock);
-        blocks.push({ type: "divider" });
+      // Extract context info from context block if available
+      let contextInfo: string | undefined;
+      if (this.contextBlock && this.contextBlock.elements) {
+        // Context block is a "context" type with elements array
+        contextInfo = this.contextBlock.elements
+          .map((element: any) => element.text || '')
+          .join(' ');
+      } else if (this.contextBlock && this.contextBlock.text && this.contextBlock.text.text) {
+        // Fallback for other block types
+        contextInfo = this.contextBlock.text.text;
       }
+      
+      // Convert markdown to Slack format with blocks support and context info
+      const slackMessage = markdownToSlackWithBlocks(content, contextInfo);
+      
+      // Build blocks array (no longer adding context block at the top)
+      let blocks: any[] = [];
       
       // Add content blocks from the message
       if (slackMessage.blocks && slackMessage.blocks.length > 0) {
@@ -206,8 +212,20 @@ export class SlackIntegration {
    */
   async postMessage(content: string, threadTs?: string): Promise<void> {
     try {
+      // Extract context info from context block if available
+      let contextInfo: string | undefined;
+      if (this.contextBlock && this.contextBlock.elements) {
+        // Context block is a "context" type with elements array
+        contextInfo = this.contextBlock.elements
+          .map((element: any) => element.text || '')
+          .join(' ');
+      } else if (this.contextBlock && this.contextBlock.text && this.contextBlock.text.text) {
+        // Fallback for other block types
+        contextInfo = this.contextBlock.text.text;
+      }
+      
       // Convert markdown to Slack format with blocks support
-      const slackMessage = markdownToSlackWithBlocks(content);
+      const slackMessage = markdownToSlackWithBlocks(content, contextInfo);
       
       await this.client.chat.postMessage({
         channel: this.responseChannel,

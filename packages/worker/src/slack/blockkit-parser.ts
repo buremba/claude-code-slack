@@ -97,54 +97,79 @@ function parseBlockMetadata(info: string): { language: string; metadata: BlockMe
 }
 
 /**
- * Generate action button block for code blocks
+ * Claude CLI slash commands with descriptions
  */
-function generateActionButton(
-  action: string,
-  language: string,
-  content: string,
-  confirm?: boolean
-): any {
-  // Generate a unique action_id based on language and content hash
-  const actionId = `${language}_${Buffer.from(content).toString('base64').substring(0, 8)}`;
+const CLAUDE_SLASH_COMMANDS = [
+  { value: "/bug", description: "Report bugs (sends conversation to Anthropic)" },
+  { value: "/clear", description: "Clear conversation history" },
+  { value: "/compact", description: "Compact conversation with optional focus instructions" },
+  { value: "/config", description: "View/modify configuration" },
+  { value: "/cost", description: "Show token usage statistics" },
+  { value: "/doctor", description: "Checks the health of your Claude Code installation" },
+  { value: "/help", description: "Get usage help" },
+  { value: "/init", description: "Initialize project with CLAUDE.md guide" },
+  { value: "/login", description: "Switch Anthropic accounts" },
+  { value: "/logout", description: "Sign out from your Anthropic account" },
+  { value: "/mcp", description: "Manage MCP server connections and OAuth authentication" },
+  { value: "/memory", description: "Edit CLAUDE.md memory files" },
+  { value: "/model", description: "Select or change the AI model" },
+  { value: "/permissions", description: "View or update permissions" },
+  { value: "/pr_comments", description: "View pull request comments" },
+  { value: "/review", description: "Request code review" },
+  { value: "/status", description: "View account and system statuses" },
+  { value: "/terminal-setup", description: "Install Shift+Enter key binding for newlines" },
+  { value: "/vim", description: "Enter vim mode for alternating insert and command modes" }
+];
+
+
+/**
+ * Generate bottom control section with context info and controls
+ */
+function generateBottomControlSection(contextInfo?: string, actionButtons?: any[]): any[] {
+  const blocks: any[] = [];
   
-  const button: any = {
-    type: "button",
+  // Create the slash command options
+  const options = CLAUDE_SLASH_COMMANDS.map(cmd => ({
     text: {
       type: "plain_text",
-      text: action
+      text: `${cmd.value} - ${cmd.description.length > 50 ? cmd.description.substring(0, 47) + '...' : cmd.description}`
     },
-    action_id: actionId,
-    value: content // Store the script/blockkit content in the button value
-  };
-
-  // For blockkit with confirm, we'll open a modal instead of inline confirm
-  // For other types, add inline confirmation if requested
-  if (confirm && language !== 'blockkit') {
-    button.confirm = {
-      title: {
-        type: "plain_text",
-        text: "Confirm Action"
-      },
+    value: cmd.value,
+    description: {
+      type: "plain_text",
+      text: cmd.description.length > 75 ? cmd.description.substring(0, 72) + '...' : cmd.description
+    }
+  }));
+  
+  // First add context as a section if it exists
+  if (contextInfo) {
+    blocks.push({
+      type: "section",
       text: {
         type: "mrkdwn",
-        text: `Are you sure you want to ${action}?`
-      },
-      confirm: {
-        type: "plain_text",
-        text: "Yes"
-      },
-      deny: {
-        type: "plain_text",
-        text: "Cancel"
+        text: contextInfo
       }
-    };
+    });
   }
-
-  return {
+  
+  // Then add actions block with all buttons and dropdown
+  const elements: any[] = [...(actionButtons || [])];
+  elements.push({ 
+    type: "static_select",
+    placeholder: {
+      type: "plain_text",
+      text: "Commands"
+    },
+    action_id: "claude_slash_command_select",
+    options: options
+  });
+  
+  blocks.push({
     type: "actions",
-    elements: [button]
-  };
+    elements: elements
+  });
+  
+  return blocks;
 }
 
 /**
@@ -343,7 +368,7 @@ function cleanUrl(href: string) {
  * Convert markdown to Slack format with actionable blocks support
  * Supports blockkit, bash, python, js/ts code blocks with action buttons
  */
-export function markdownToSlackWithBlocks(markdown: string): SlackMessage {
+export function markdownToSlackWithBlocks(markdown: string, contextInfo?: string): SlackMessage {
   const renderer = new BlockKitRenderer();
   
   // Create a new marked instance to avoid conflicts with global configuration
@@ -374,6 +399,7 @@ export function markdownToSlackWithBlocks(markdown: string): SlackMessage {
   
   if (parsedBlocks.length > 0) {
     const allBlocks: any[] = [];
+    const actionButtons: any[] = [];
     
     // Add a text section if we have text content
     if (text.trim()) {
@@ -386,7 +412,7 @@ export function markdownToSlackWithBlocks(markdown: string): SlackMessage {
       });
     }
     
-    // Add blocks for each parsed block
+    // Process parsed blocks - collect action buttons separately
     for (const parsed of parsedBlocks) {
       const { metadata, content, language, blocks } = parsed;
       
@@ -396,28 +422,96 @@ export function markdownToSlackWithBlocks(markdown: string): SlackMessage {
           // Show the blocks directly in the message
           allBlocks.push(...blocks);
         } else if (metadata.action) {
-          // Create a button that will open a modal with the blockkit content
-          const actionBlock = generateActionButton(
-            metadata.action,
-            language,
-            JSON.stringify({ blocks: blocks || [] }),
-            metadata.confirm
-          );
-          allBlocks.push(actionBlock);
+          // Create a button for the blockkit content
+          const button: any = {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: metadata.action
+            },
+            action_id: `blockkit_${Buffer.from(JSON.stringify({ blocks: blocks || [] })).toString('base64').substring(0, 8)}`,
+            value: JSON.stringify({ blocks: blocks || [] })
+          };
+          if (metadata.confirm && language !== 'blockkit') {
+            button.confirm = {
+              title: {
+                type: "plain_text",
+                text: "Confirm Action"
+              },
+              text: {
+                type: "mrkdwn",
+                text: `Are you sure you want to ${metadata.action}?`
+              },
+              confirm: {
+                type: "plain_text",
+                text: "Yes"
+              },
+              deny: {
+                type: "plain_text",
+                text: "Cancel"
+              }
+            };
+          }
+          actionButtons.push(button);
         }
       } else if (metadata.action) {
-        // Generate action button for executable code blocks
-        const actionBlock = generateActionButton(
-          metadata.action,
-          language,
-          content,
-          metadata.confirm
-        );
-        allBlocks.push(actionBlock);
+        // Create button for executable code blocks
+        const button: any = {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: metadata.action
+          },
+          action_id: `${language}_${Buffer.from(content).toString('base64').substring(0, 8)}`,
+          value: content
+        };
+        if (metadata.confirm) {
+          button.confirm = {
+            title: {
+              type: "plain_text",
+              text: "Confirm Action"
+            },
+            text: {
+              type: "mrkdwn",
+              text: `Are you sure you want to ${metadata.action}?`
+            },
+            confirm: {
+              type: "plain_text",
+              text: "Yes"
+            },
+            deny: {
+              type: "plain_text",
+              text: "Cancel"
+            }
+          };
+        }
+        actionButtons.push(button);
       }
     }
     
+    // Add divider and bottom control section with context and all controls
+    allBlocks.push({ type: "divider" });
+    allBlocks.push(...generateBottomControlSection(contextInfo, actionButtons));
+    
     message.blocks = allBlocks;
+  } else {
+    // Even if no parsed blocks, add bottom control section if we have text content
+    if (text.trim()) {
+      const allBlocks: any[] = [];
+      
+      allBlocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: text
+        }
+      });
+      
+      allBlocks.push({ type: "divider" });
+      allBlocks.push(...generateBottomControlSection(contextInfo));
+      
+      message.blocks = allBlocks;
+    }
   }
   
   return message;

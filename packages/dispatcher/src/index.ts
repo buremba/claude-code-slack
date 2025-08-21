@@ -135,6 +135,26 @@ export class SlackDispatcher {
           }
         });
       } else {
+        // In socket mode, add connection event handlers first
+        const socketModeClient = (this.app as any).receiver?.client;
+        if (socketModeClient) {
+          socketModeClient.on('slack_event', (event: any, body: any) => {
+            logger.debug('Socket Mode event received:', event.type);
+          });
+          
+          socketModeClient.on('disconnect', () => {
+            logger.debug('Socket Mode disconnected, will auto-reconnect');
+          });
+          
+          socketModeClient.on('error', (error: any) => {
+            if (error.message?.includes('server explicit disconnect')) {
+              logger.debug('Socket Mode connection reset (normal)');
+            } else {
+              logger.warn('Socket Mode error:', error.message);
+            }
+          });
+        }
+        
         // In socket mode, just start
         logger.info("Starting Slack app in Socket Mode...");
         try {
@@ -250,6 +270,16 @@ export class SlackDispatcher {
     });
 
     process.on("unhandledRejection", (reason, promise) => {
+      // Filter out expected Socket Mode connection events
+      const reasonStr = String(reason);
+      if (reasonStr.includes("server explicit disconnect") || 
+          reasonStr.includes("Unhandled event") ||
+          reasonStr.includes("state machine")) {
+        // These are expected Socket Mode reconnection events, just log as debug
+        logger.debug("Socket Mode connection event (expected):", reasonStr.substring(0, 100));
+        return;
+      }
+      
       logger.error("Unhandled Rejection at:", promise, "reason:", reason);
       // Don't exit on unhandled rejections during startup
       // The app might still work despite some initialization errors

@@ -408,13 +408,6 @@ export class WorkspaceManager {
     try {
       const repoDir = this.workspaceInfo.userDirectory;
       
-      // Sync Claude projects before committing
-      try {
-        await execAsync("/app/scripts/sync-claude-projects.sh", { cwd: repoDir });
-        logger.info("Synced Claude projects");
-      } catch (error) {
-        logger.warn("Failed to sync Claude projects:", error);
-      }
       
       // Add all changes
       await execAsync("git add .", { cwd: repoDir });

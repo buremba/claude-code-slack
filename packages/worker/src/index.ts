@@ -17,7 +17,6 @@ export class ClaudeWorker {
   private slackIntegration: SlackIntegration;
   private config: WorkerConfig;
   private tokenManager?: SlackTokenManager;
-  private autoPushInterval?: NodeJS.Timeout;
 
   constructor(config: WorkerConfig) {
     this.config = config;
@@ -46,36 +45,6 @@ export class ClaudeWorker {
     }
   }
 
-  /**
-   * Start automatic git push interval
-   */
-  private startAutoPush(): void {
-    // Check and push changes every 30 seconds
-    this.autoPushInterval = setInterval(async () => {
-      try {
-        const status = await this.workspaceManager.getRepositoryStatus();
-        if (status.hasChanges) {
-          logger.info("Auto-push: Detected changes, committing and pushing...");
-          await this.workspaceManager.commitAndPush(
-            `Auto-save: ${status.changedFiles.length} file(s) modified`
-          );
-          logger.info("Auto-push: Changes pushed successfully");
-        }
-      } catch (error) {
-        logger.warn("Auto-push failed:", error);
-      }
-    }, 30000); // Every 30 seconds
-  }
-
-  /**
-   * Stop automatic git push interval
-   */
-  private stopAutoPush(): void {
-    if (this.autoPushInterval) {
-      clearInterval(this.autoPushInterval);
-      this.autoPushInterval = undefined;
-    }
-  }
 
   private listMakefilePaths(rootDirectory: string): string[] {
     const foundMakefiles: string[] = [];
@@ -179,10 +148,6 @@ export class ClaudeWorker {
           {
             type: "mrkdwn",
               text: `🪚 <${this.config.repositoryUrl.replace('github.com', 'github.dev')}/tree/main|${this.config.username}>`
-          },
-          {
-            type: "mrkdwn",
-            text: `📂 ./`
           }
         ]
       };
@@ -221,11 +186,7 @@ export class ClaudeWorker {
           },
           {
             type: "mrkdwn",
-            text: `🔀 <${this.config.repositoryUrl}/compare/main...${branchName}|Create Pull Request>`
-          },
-          {
-            type: "mrkdwn",
-            text: `📂 ./`
+            text: `🔀 <${this.config.repositoryUrl}/compare/main...${branchName}|Pull Request>`
           }
         ]
       };
@@ -233,9 +194,6 @@ export class ClaudeWorker {
       // Update context block with proper URLs
       this.slackIntegration.setContextBlock(contextBlock);
       
-      // Start automatic git push
-      logger.info("Starting automatic git push monitoring...");
-      this.startAutoPush();
 
       // Update progress with simple status
       await this.slackIntegration.updateProgress("🚀 Starting Claude session...");
@@ -304,8 +262,6 @@ export class ClaudeWorker {
       logger.info("result.output sample:", result.output?.substring(0, 300));
       logger.info("About to update Slack...");
       
-      // Stop auto-push before final operations
-      this.stopAutoPush();
       
       // Do a final push of any remaining changes
       try {
@@ -358,8 +314,6 @@ export class ClaudeWorker {
     } catch (error) {
       logger.error("Worker execution failed:", error);
       
-      // Stop auto-push on error
-      this.stopAutoPush();
       
       // Try to push any pending changes before failing
       try {
@@ -403,9 +357,9 @@ You are a helpful Claude Code agent running in a pod on K8S for user ${this.conf
 You MUST generate Markdown content that will be rendered in user's messaging app. 
 
 **Code Block Actions:**
-You can add action metadata to code blocks to create interactive buttons. The metadata goes in the fence info, NOT in the content.
-
-**CRITICAL: Metadata goes in fence info, content contains only the actual code/JSON.**
+You can add action metadata to code blocks to create interactive buttons. 
+The metadata goes in the fence info, NOT in the content.
+Only use it to run commands and programs, not to create forms or links.
 
 **Examples:**
 
@@ -439,7 +393,6 @@ docker build -t myapp .
 - Forms without action metadata will NOT work properly
 
 **Environment:**
-- Working dir: ./  
 - Repo: ${this.config.repositoryUrl}
 - Session: ${this.config.sessionKey}
 - Makefile directories and targets (indicating projects):
@@ -447,13 +400,14 @@ ${this.getMakeTargetsSummary()}
 
 **Guidelines:**
 - Branch: claude/${this.config.sessionKey.replace(/\./g, "-")}
+- IMPORTANT: After making any code changes, you MUST commit and push them using git commands (git add, git commit, git push).
 - Push only to this branch (no PR creation, the user has to create PR manually).
 - Focus on the user's request.
 - Always prefer numbered lists over bullet points.
 - After changes, ask the user to click "Create Pull Request".
 
 **Instructions:**
-1. New project: create a folder in the current directory; ask for name, tech stack (dbname,providername,apiservicename etc.) in a form and autopopulate if provided. Collect secrets if needed. Deployment types are Node.js/bun, Python/uv, Docker, Docker Compose, Cloudflare (install flarectl and ask for personal access token).
+1. New project: create a folder in the current directory; ask for name, tech stack (dbname,providername,apiservicename etc.) in a form and autopopulate if provided. Collect secrets if needed. Deployment types are Node.js/bun, Python/uv, Docker, Docker Compose, Cloudflare (install flarectl and ask for personal access token.).
 2. Feature/bug: if no Makefile in current dir, show a dropdown of folders containing a Makefile in a form; user selects one; set the current directory to the selected folder.
 3. Secrets: if required, collect values via form and map to .env file before running make commands.
 4. New persona: If the user says he wants to create subagent/persona, create a Claude subagent on .claude/agents/agent-name.md and in there add it's traits based on the form values the user enters.
@@ -490,8 +444,6 @@ ${this.getMakeTargetsSummary()}
     try {
       logger.info("Cleaning up worker resources...");
       
-      // Stop auto-push if still running
-      this.stopAutoPush();
       
       // Cleanup session runner
       await this.sessionRunner.cleanupSession(this.config.sessionKey);

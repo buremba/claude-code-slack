@@ -11,6 +11,10 @@ RUN apk add --no-cache \
     jq \
     sudo
 
+# Install cloudflared
+RUN curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" -o /usr/local/bin/cloudflared && \
+    chmod +x /usr/local/bin/cloudflared
+
 # Create a non-root user with home directory
 RUN addgroup -g 1001 claude && \
     adduser -u 1001 -G claude -h /home/claude -D claude

@@ -451,7 +451,6 @@ export class SlackEventHandlers {
         channel: context.channelId,
         thread_ts: threadTs,
         text: "🚀 Starting Claude session...",
-        blocks: this.formatInitialResponseBlocks(sessionKey, username, repository.repositoryUrl, undefined, "🚀 Starting Claude session..."),
       });
       
       // Now create the Kubernetes job with the Slack response timestamp
@@ -691,40 +690,6 @@ export class SlackEventHandlers {
       }
       return fallbackUsername;
     }
-  }
-
-  /**
-   * Format initial response message as blocks
-   */
-  private formatInitialResponseBlocks(_sessionKey: string, username: string, repositoryUrl: string, _jobName?: string, statusText: string = "🔄 Creating pod..."): any[] {
-    const blocks: any[] = [];
-    
-    // Context header with key info
-    blocks.push({
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: `📁 <${repositoryUrl.replace('github.com', 'github.dev')}|${username}>`
-        }
-      ]
-    });
-    
-    // Divider
-    blocks.push({
-      type: "divider"
-    });
-    
-    // Status message
-    blocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: statusText
-      }
-    });
-    
-    return blocks;
   }
 
   /**
@@ -1043,6 +1008,10 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
     
     // Handle predefined actions
     switch (actionId) {
+      case "claude_slash_command_select":
+        await this.handleSlashCommandSelection(userId, githubUsername, channelId, messageTs, client, body);
+        break;
+        
       case "deploy_production":
         await this.handleDeployAction(userId, githubUsername, channelId, messageTs, client, "production");
         break;
@@ -1078,6 +1047,64 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
     }
   }
   
+  /**
+   * Handle slash command selection from select menu
+   */
+  private async handleSlashCommandSelection(
+    userId: string,
+    githubUsername: string,
+    channelId: string,
+    messageTs: string,
+    client: any,
+    body: any
+  ): Promise<void> {
+    // Extract the selected slash command
+    const action = body.actions?.[0];
+    const selectedCommand = action?.selected_option?.value;
+    
+    if (!selectedCommand) {
+      logger.warn(`No slash command selected by user ${userId}`);
+      return;
+    }
+    
+    logger.info(`User ${userId} selected slash command: ${selectedCommand}`);
+    
+    // Get the thread timestamp to determine where to post
+    const threadTs = body?.message?.thread_ts || messageTs;
+    
+    // Post a message indicating what the user selected
+    const selectionMessage = await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: `🔘 <@${userId}> selected: \`${selectedCommand}\``,
+      blocks: [
+        {
+          type: "context",
+          elements: [
+            {
+              type: "mrkdwn",
+              text: `<@${userId}> selected slash command: \`${selectedCommand}\``
+            }
+          ]
+        }
+      ]
+    });
+    
+    // Create context for continuing the conversation with the slash command
+    const context: SlackContext = {
+      channelId,
+      userId,
+      userDisplayName: await this.getUserDisplayName(userId, client),
+      teamId: (body as any).team?.id || "",
+      messageTs: selectionMessage.ts as string,
+      threadTs: threadTs,
+      text: selectedCommand,
+    };
+    
+    // Handle the slash command as a continuation of the conversation
+    await this.handleUserRequest(context, selectedCommand, client);
+  }
+
   /**
    * Handle deployment actions
    */
@@ -1619,7 +1646,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
             type: "button",
             text: {
               type: "plain_text",
-              text: "🔄 Create Pull Request"
+              text: "🔄 Merge Request"
             },
             url: `${repository.repositoryUrl}/compare`,
             action_id: "create_pr_link"

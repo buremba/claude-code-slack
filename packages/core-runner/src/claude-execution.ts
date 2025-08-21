@@ -16,6 +16,38 @@ import type {
 const execAsync = promisify(exec);
 
 const PIPE_PATH = `${process.env.RUNNER_TEMP || "/tmp"}/claude_prompt_pipe`;
+
+/**
+ * Check for unstashed files and commit them if any exist
+ */
+async function checkAndCommitUnstashedFiles(workingDirectory?: string): Promise<void> {
+  const cwd = workingDirectory || process.cwd();
+  
+  try {
+    // Check git status to see if there are any unstashed files
+    const { stdout: gitStatus } = await execAsync("git status --porcelain", { cwd });
+    
+    if (gitStatus.trim()) {
+      logger.info("Found unstashed files, committing them automatically...");
+      
+      // Stage all changes
+      await execAsync("git add -A", { cwd });
+      
+      // Get list of modified files for commit message
+      const { stdout: statusOutput } = await execAsync("git status --porcelain --cached", { cwd });
+      const modifiedFiles = statusOutput.split('\n').filter(line => line.trim()).length;
+      
+      // Commit with a descriptive message
+      const commitMessage = `Auto-commit before Claude execution: ${modifiedFiles} file(s) modified`;
+      await execAsync(`git commit -m "${commitMessage}"`, { cwd });
+      
+      logger.info(`Committed ${modifiedFiles} unstashed files before Claude execution`);
+    }
+  } catch (error) {
+    // Log but don't fail if git operations don't work (e.g., not a git repository)
+    logger.warn("Could not check/commit unstashed files:", error);
+  }
+}
 const EXECUTION_FILE = `${process.env.RUNNER_TEMP || "/tmp"}/claude-execution-output.json`;
 const BASE_ARGS = ["--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions", "-p"];
 
@@ -129,6 +161,9 @@ export async function runClaudeWithProgress(
   workingDirectory?: string
 ): Promise<ClaudeExecutionResult> {
   const config = prepareRunConfig(promptPath, options);
+
+  // Check for unstashed files and commit them before starting Claude
+  await checkAndCommitUnstashedFiles(workingDirectory);
 
   // Create a named pipe
   try {
