@@ -149,11 +149,10 @@ export function extractFinalResponse(rawOutput: string | undefined): string {
   }
 
   const lines = rawOutput.split("\n").filter(line => line.trim() !== "");
-  const textMessages: string[] = [];
+  let lastAssistantMessage = "";
 
-  // Process lines in reverse to get the most recent text messages
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i];
+  // Process lines to find assistant messages
+  for (const line of lines) {
     if (!line) continue;
     try {
       const parsed: ClaudeMessage = JSON.parse(line);
@@ -163,19 +162,28 @@ export function extractFinalResponse(rawOutput: string | undefined): string {
         // Handle the content array structure
         const content = parsed.message.content;
         if (Array.isArray(content)) {
+          const assistantTexts: string[] = [];
           for (const item of content) {
             if (item.type === "text" && item.text) {
-              textMessages.unshift(item.text);
+              assistantTexts.push(item.text);
             }
+          }
+          if (assistantTexts.length > 0) {
+            lastAssistantMessage = assistantTexts.join("\n\n");
           }
         }
       } else if (parsed.type === "text" && parsed.content) {
-        textMessages.unshift(parsed.content);
+        // Track text messages as potential last response
+        lastAssistantMessage = parsed.content;
       }
     } catch (e) {
-      // Ignore non-JSON lines
+      // If it's not JSON but looks like meaningful text, consider it
+      if (line.trim() && !line.startsWith("{") && line.length > 10) {
+        lastAssistantMessage = line;
+      }
     }
   }
 
-  return textMessages.join("\n\n");
+  // Return the last assistant message we found
+  return lastAssistantMessage;
 }

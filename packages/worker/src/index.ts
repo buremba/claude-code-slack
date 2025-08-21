@@ -281,11 +281,15 @@ export class ClaudeWorker {
         logger.info("Calling slackIntegration.updateProgress...");
         // Update with Claude's response and completion status
         const claudeResponse = this.formatClaudeResponse(result.output);
-        if (claudeResponse) {
-          await this.slackIntegration.updateProgress(claudeResponse);
-        } else {
-          await this.slackIntegration.updateProgress("✅ Completed");
-        }
+        
+        // IMPORTANT: Always update with a message, even if Claude didn't provide final text
+        // This ensures the "thinking" message is replaced
+        const finalMessage = claudeResponse && claudeResponse.trim() 
+          ? claudeResponse 
+          : "✅ Task completed successfully";
+        
+        logger.info(`Updating Slack with final message: ${finalMessage.substring(0, 100)}...`);
+        await this.slackIntegration.updateProgress(finalMessage);
         
         // Update reaction to success
         logger.info(`Updating reaction to success. originalMessageTs: ${originalMessageTs}`);

@@ -44,6 +44,12 @@ export class SlackIntegration {
    */
   async updateProgress(content: string): Promise<void> {
     try {
+      // Ensure we always have content to update with
+      if (!content || content.trim() === "") {
+        logger.warn("updateProgress called with empty content, using default message");
+        content = "✅ Task completed";
+      }
+      
       // Rate limiting: don't update more than once every 2 seconds
       const now = Date.now();
       if (now - this.lastUpdateTime < 2000) {
@@ -133,6 +139,12 @@ export class SlackIntegration {
    */
   private async performUpdate(content: string): Promise<void> {
     try {
+      // Final safety check - ensure we have content
+      if (!content || content.trim() === "") {
+        logger.warn("performUpdate called with empty content, using fallback");
+        content = "✅ Task completed";
+      }
+      
       logger.info(`performUpdate called with content length: ${content.length}`);
       logger.info(`Response channel: ${this.responseChannel}, TS: ${this.responseTs}`);
       
