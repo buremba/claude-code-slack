@@ -26,15 +26,17 @@ deploy:
       valuesFiles:
       - charts/peerbot/values-local.yaml
       setValueTemplates:
-        dispatcher.image.repository: peerbot-dispatcher
         dispatcher.image.tag: "{{.IMAGE_TAG_peerbot_dispatcher}}"
-        worker.image.repository: claude-worker
         worker.image.tag: "{{.IMAGE_TAG_claude_worker}}"
       setValues:
         dispatcher.socketMode: "true"
         dispatcher.httpMode: "false"
         ingress.enabled: "false"
         service.type: ClusterIP
+        dispatcher.image.pullPolicy: IfNotPresent
+        dispatcher.image.repository: peerbot-dispatcher
+        worker.image.pullPolicy: IfNotPresent
+        worker.image.repository: claude-worker
 portForward:
 - resourceType: deployment
   resourceName: peerbot-dispatcher

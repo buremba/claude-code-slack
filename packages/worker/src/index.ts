@@ -404,7 +404,7 @@ ${this.getMakeTargetsSummary()}
 - Push only to this branch (no PR creation, the user has to create PR manually).
 - Focus on the user's request.
 - Always prefer numbered lists over bullet points.
-- After changes, ask the user to click "Create Pull Request".
+- After changes, ask the user to click "Pull Request" button below.
 
 **Instructions:**
 1. New project: create a folder in the current directory; ask for name, tech stack (dbname,providername,apiservicename etc.) in a form and autopopulate if provided. Collect secrets if needed. Deployment types are Node.js/bun, Python/uv, Docker, Docker Compose, Cloudflare (install flarectl and ask for personal access token.).

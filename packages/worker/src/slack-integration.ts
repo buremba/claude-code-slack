@@ -171,7 +171,7 @@ export class SlackIntegration {
       const updateOptions: any = {
         channel: this.responseChannel,
         ts: this.responseTs,
-        text: blocks.length > 0 ? "Claude is updating..." : (slackMessage.text || content),
+        text: slackMessage.text || content,
         mrkdwn: true,
       };
       
