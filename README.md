@@ -73,12 +73,11 @@ Full-featured deployment with per-user isolation and persistence
 
 **Benefits:**
 - ✅ Per-user containers and GitHub repositories  
-- ✅ Thread-based conversation persistence
+- ✅ Thread-based conversation persistence via Kubernetes PVC
 - ✅ Horizontal scaling for large teams
 - ✅ Enterprise security and monitoring
-- ✅ GCS backup and recovery
+- ✅ Persistent volume-based session storage
 
 **Prerequisites:**
-- Google Kubernetes Engine (GKE) cluster
-- Google Cloud Storage bucket
+- Kubernetes cluster (GKE, EKS, AKS, or local)
 - GitHub organization for user repositories
