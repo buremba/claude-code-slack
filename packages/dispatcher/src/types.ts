@@ -19,14 +19,6 @@ export interface SlackConfig {
   allowPrivateChannels?: boolean;
 }
 
-export interface KubernetesConfig {
-  namespace: string;
-  workerImage: string;
-  cpu: string;
-  memory: string;
-  timeoutSeconds: number;
-  kubeconfig?: string;
-}
 
 export interface GitHubConfig {
   token: string;
@@ -34,13 +26,22 @@ export interface GitHubConfig {
   repoTemplate?: string;
 }
 
+export interface QueueConfig {
+  directMessage: string;
+  messageQueue: string;
+  connectionString: string;
+  retryLimit?: number;
+  retryDelay?: number;
+  expireInHours?: number;
+}
+
 export interface DispatcherConfig {
   slack: SlackConfig;
-  kubernetes: KubernetesConfig;
   github: GitHubConfig;
   claude: Partial<ClaudeExecutionOptions>;
   sessionTimeoutMinutes: number;
   logLevel?: LogLevel;
+  queues: QueueConfig;
 }
 
 export interface SlackContext {
@@ -69,6 +70,21 @@ export interface WorkerJobRequest {
   resumeSessionId?: string; // Claude session ID to resume from
 }
 
+export interface WorkerDeploymentRequest {
+  userId: string;
+  botId: string;
+  agentSessionId: string;
+  threadId: string;
+  platform: string;
+  platformUserId: string;
+  messageId: string;
+  messageText: string;
+  channelId: string;
+  platformMetadata: Record<string, any>;
+  claudeOptions: Record<string, any>;
+  environmentVariables?: Record<string, string>;
+}
+
 export interface ThreadSession {
   sessionKey: string;
   threadTs?: string;
@@ -77,7 +93,7 @@ export interface ThreadSession {
   username: string;
   jobName?: string;
   repositoryUrl: string;
-  claudeSessionId?: string; // Claude session ID for resumption
+  agentSessionId?: string; // Agent session ID for resumption
   lastActivity: number;
   status: "pending" | "starting" | "running" | "completed" | "error" | "timeout";
   createdAt: number;
@@ -105,16 +121,6 @@ export class DispatcherError extends Error {
   }
 }
 
-export class KubernetesError extends Error {
-  constructor(
-    public operation: string,
-    message: string,
-    public cause?: Error
-  ) {
-    super(message);
-    this.name = "KubernetesError";
-  }
-}
 
 export class GitHubRepositoryError extends Error {
   constructor(

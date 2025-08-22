@@ -4,7 +4,7 @@ import { config as dotenvConfig } from 'dotenv';
 import { join } from 'path';
 import { App, ExpressReceiver, LogLevel } from "@slack/bolt";
 import { SlackEventHandlers } from "./slack/event-handlers";
-import { KubernetesJobManager } from "./kubernetes/job-manager";
+import { QueueProducer } from "./queue/queue-producer";
 import { GitHubRepositoryManager } from "./github/repository-manager";
 import { setupHealthEndpoints } from "./simple-http";
 import type { DispatcherConfig } from "./types";
@@ -12,12 +12,16 @@ import logger from "./logger";
 
 export class SlackDispatcher {
   private app: App;
-  private jobManager: KubernetesJobManager;
+  private queueProducer: QueueProducer;
   private repoManager: GitHubRepositoryManager;
   private config: DispatcherConfig;
 
   constructor(config: DispatcherConfig) {
     this.config = config;
+    
+    if (!config.queues?.connectionString) {
+      throw new Error('Queue connection string is required');
+    }
 
     // Initialize Slack app based on mode
     if (config.slack.socketMode === false) {
@@ -61,8 +65,17 @@ export class SlackDispatcher {
       logger.info("Initialized Slack app in Socket mode");
     }
 
-    // Initialize managers
-    this.jobManager = new KubernetesJobManager(config.kubernetes);
+    // Initialize queue producer with database config for user configs
+    logger.info("Initializing queue mode");
+    const databaseConfig = {
+      host: process.env.DATABASE_HOST || 'localhost',
+      port: parseInt(process.env.DATABASE_PORT || '5432'),
+      database: process.env.DATABASE_NAME || 'peerbot',
+      username: process.env.DATABASE_USERNAME || 'postgres',
+      password: process.env.DATABASE_PASSWORD || '',
+      ssl: process.env.DATABASE_SSL === 'true'
+    };
+    this.queueProducer = new QueueProducer(config.queues.connectionString, databaseConfig);
     this.repoManager = new GitHubRepositoryManager(config.github);
 
     this.setupErrorHandling();
@@ -84,8 +97,12 @@ export class SlackDispatcher {
    */
   async start(): Promise<void> {
     try {
-      // Setup health endpoints for Kubernetes FIRST
+      // Setup health endpoints FIRST
       setupHealthEndpoints();
+      
+      // Start queue producer
+      await this.queueProducer.start();
+      logger.info("✅ Queue producer started");
       
       // Get bot's own user ID and bot ID dynamically before starting
       await this.initializeBotInfo(this.config);
@@ -171,8 +188,6 @@ export class SlackDispatcher {
       
       // Log configuration
       logger.info("Configuration:");
-      logger.info(`- Kubernetes Namespace: ${this.config.kubernetes.namespace}`);
-      logger.info(`- Worker Image: ${this.config.kubernetes.workerImage}`);
       logger.info(`- GitHub Organization: ${this.config.github.organization}`);
       logger.info(`- Session Timeout: ${this.config.sessionTimeoutMinutes} minutes`);
       logger.info(`- Signing Secret: ${this.config.slack.signingSecret?.substring(0, 8)}...`);
@@ -189,8 +204,8 @@ export class SlackDispatcher {
   async stop(): Promise<void> {
     try {
       await this.app.stop();
-      await this.jobManager.cleanup();
       
+      await this.queueProducer.stop();
       
       logger.info("Slack dispatcher stopped");
     } catch (error) {
@@ -203,25 +218,19 @@ export class SlackDispatcher {
    */
   getStatus(): {
     isRunning: boolean;
-    activeJobs: number;
+    mode: string;
     config: Partial<DispatcherConfig>;
   } {
     return {
       isRunning: true,
-      activeJobs: this.jobManager.getActiveJobCount(),
+      mode: 'queue',
       config: {
         slack: {
           token: this.config.slack.token,
           socketMode: this.config.slack.socketMode,
           port: this.config.slack.port,
         },
-        kubernetes: {
-          namespace: this.config.kubernetes.namespace,
-          workerImage: this.config.kubernetes.workerImage,
-          cpu: this.config.kubernetes.cpu,
-          memory: this.config.kubernetes.memory,
-          timeoutSeconds: this.config.kubernetes.timeoutSeconds,
-        },
+        queues: this.config.queues,
       },
     };
   }
@@ -245,10 +254,11 @@ export class SlackDispatcher {
       config.slack.botUserId = botUserId;
       config.slack.botId = botId;
       
-      // Now initialize event handlers with bot info
+      // Initialize queue-based event handlers
+      logger.info("Initializing queue-based event handlers");
       new SlackEventHandlers(
         this.app,
-        this.jobManager,
+        this.queueProducer,
         this.repoManager,
         config
       );
@@ -301,23 +311,7 @@ export class SlackDispatcher {
       // Stop accepting new jobs
       await this.stop();
       
-      // Wait for active jobs to complete (with timeout)
-      const activeJobs = this.jobManager.getActiveJobCount();
-      if (activeJobs > 0) {
-        logger.info(`Waiting for ${activeJobs} active jobs to complete...`);
-        
-        const timeout = setTimeout(() => {
-          logger.warn("Timeout reached, forcing shutdown");
-          process.exit(0);
-        }, 60000); // 1 minute timeout
-        
-        // Wait for jobs to complete
-        while (this.jobManager.getActiveJobCount() > 0) {
-          await new Promise(resolve => setTimeout(resolve, 2000));
-        }
-        
-        clearTimeout(timeout);
-      }
+      // Queue cleanup is handled by stop()
       
       logger.info("Slack dispatcher shutdown complete");
       process.exit(0);
@@ -353,13 +347,6 @@ async function main() {
         allowedUsers: process.env.SLACK_ALLOWED_USERS?.split(","),
         allowedChannels: process.env.SLACK_ALLOWED_CHANNELS?.split(","),
       },
-      kubernetes: {
-        namespace: process.env.KUBERNETES_NAMESPACE || "default",
-        workerImage: process.env.WORKER_IMAGE || "claude-worker:latest",
-        cpu: process.env.WORKER_CPU || "1000m",
-        memory: process.env.WORKER_MEMORY || "2Gi",
-        timeoutSeconds: parseInt(process.env.WORKER_TIMEOUT_SECONDS || "300"),
-      },
       github: {
         token: process.env.GITHUB_TOKEN!,
         organization: process.env.GITHUB_ORGANIZATION || "", // Empty string means use authenticated user
@@ -371,6 +358,15 @@ async function main() {
       },
       sessionTimeoutMinutes: parseInt(process.env.SESSION_TIMEOUT_MINUTES || "5"),
       logLevel: process.env.LOG_LEVEL as any || LogLevel.INFO,
+      // Queue configuration (required)
+      queues: {
+        connectionString: process.env.PGBOSS_CONNECTION_STRING!,
+        directMessage: process.env.QUEUE_DIRECT_MESSAGE || "direct_message",
+        messageQueue: process.env.QUEUE_MESSAGE_QUEUE || "message_queue",
+        retryLimit: parseInt(process.env.PGBOSS_RETRY_LIMIT || "3"),
+        retryDelay: parseInt(process.env.PGBOSS_RETRY_DELAY || "30"),
+        expireInHours: parseInt(process.env.PGBOSS_EXPIRE_HOURS || "24"),
+      },
     };
 
     // Validate required configuration
@@ -379,6 +375,9 @@ async function main() {
     }
     if (!config.github.token) {
       throw new Error("GITHUB_TOKEN is required");
+    }
+    if (!config.queues.connectionString) {
+      throw new Error("PGBOSS_CONNECTION_STRING is required");
     }
 
     // Create and start dispatcher

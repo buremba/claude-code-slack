@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "peerbot.fullname" . }}-worker
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  # KEDA will manage the replica count
+  replicas: {{ .Values.worker.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "peerbot.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "peerbot.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: {{ include "peerbot.fullname" . }}-worker
+      containers:
+      - name: worker
+        image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
+        imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+        
+        env:
+        # Database connection for pgboss consumer
+        - name: DATABASE_URL
+          value: "postgres://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "peerbot.fullname" . }}-postgresql:5432/{{ .Values.postgresql.database }}"
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "peerbot.fullname" . }}-secrets
+              key: postgresql-password
+        
+        # KEDA database URL (same as above, for KEDA scaler)
+        - name: KEDA_DATABASE_URL
+          value: "postgres://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "peerbot.fullname" . }}-postgresql:5432/{{ .Values.postgresql.database }}"
+        
+        # Queue configuration
+        - name: QUEUE_DIRECT_MESSAGE
+          value: {{ .Values.queues.directMessage }}
+        - name: QUEUE_MESSAGE_QUEUE
+          value: {{ .Values.queues.messageQueue }}
+        
+        # pgboss configuration
+        - name: PGBOSS_RETRY_LIMIT
+          value: "{{ .Values.pgboss.retryLimit }}"
+        - name: PGBOSS_RETRY_DELAY
+          value: "{{ .Values.pgboss.retryDelay }}"
+        - name: PGBOSS_EXPIRE_HOURS
+          value: "{{ .Values.pgboss.expireInHours }}"
+        
+        # Worker configuration
+        - name: WORKER_MODE
+          value: "queue"
+        - name: LOG_LEVEL
+          value: {{ .Values.worker.logLevel | default "info" }}
+        
+        # Workspace configuration
+        - name: WORKSPACE_PATH
+          value: "/workspace"
+        
+        ports:
+        - name: health
+          containerPort: 8080
+          protocol: TCP
+        
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: health
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        resources:
+          requests:
+            cpu: {{ .Values.worker.resources.requests.cpu }}
+            memory: {{ .Values.worker.resources.requests.memory }}
+          limits:
+            cpu: {{ .Values.worker.resources.limits.cpu }}
+            memory: {{ .Values.worker.resources.limits.memory }}
+        
+        volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+      
+      volumes:
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: {{ include "peerbot.fullname" . }}-worker-pvc

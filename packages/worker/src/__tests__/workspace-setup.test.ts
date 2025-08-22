@@ -1,12 +1,15 @@
 #!/usr/bin/env bun
 
 import { describe, it, expect, beforeEach, afterEach, mock, jest } from "bun:test";
+jest.mock = mock.module;
 import { spawn } from "child_process";
 import { promises as fs } from "fs";
 import { join } from "path";
 
 // Mock dependencies
-jest.mock("child_process");
+jest.mock("child_process", () => ({
+  spawn: jest.fn(),
+}));
 jest.mock("fs", () => ({
   promises: {
     mkdir: jest.fn(),

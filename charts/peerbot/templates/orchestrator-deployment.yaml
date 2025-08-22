@@ -1,0 +1,125 @@
+{{- if .Values.orchestrator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "peerbot.fullname" . }}-orchestrator
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: orchestrator
+spec:
+  replicas: {{ .Values.orchestrator.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "peerbot.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: orchestrator
+  template:
+    metadata:
+      labels:
+        {{- include "peerbot.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: orchestrator
+    spec:
+      serviceAccountName: {{ include "peerbot.fullname" . }}-orchestrator
+      containers:
+      - name: orchestrator
+        image: "{{ .Values.orchestrator.image.repository }}:{{ .Values.orchestrator.image.tag }}"
+        imagePullPolicy: {{ .Values.orchestrator.image.pullPolicy }}
+        
+        env:
+        # Database connection
+        - name: DATABASE_HOST
+          value: {{ include "peerbot.fullname" . }}-postgresql
+        - name: DATABASE_PORT
+          value: "5432"
+        - name: DATABASE_NAME
+          value: {{ .Values.postgresql.database }}
+        - name: DATABASE_USERNAME
+          value: {{ .Values.postgresql.username }}
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "peerbot.fullname" . }}-secrets
+              key: postgresql-password
+        
+        # pgboss connection
+        - name: PGBOSS_CONNECTION_STRING
+          value: "postgres://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "peerbot.fullname" . }}-postgresql:5432/{{ .Values.postgresql.database }}"
+        
+        # pgboss configuration
+        - name: PGBOSS_RETRY_LIMIT
+          value: "{{ .Values.pgboss.retryLimit }}"
+        - name: PGBOSS_RETRY_DELAY
+          value: "{{ .Values.pgboss.retryDelay }}"
+        - name: PGBOSS_EXPIRE_HOURS
+          value: "{{ .Values.pgboss.expireInHours }}"
+        
+        # Worker image configuration
+        - name: WORKER_IMAGE_REPOSITORY
+          value: {{ .Values.worker.image.repository }}
+        - name: WORKER_IMAGE_TAG
+          value: {{ .Values.worker.image.tag }}
+        
+        # Worker resource configuration
+        - name: WORKER_CPU_REQUEST
+          value: {{ .Values.worker.resources.requests.cpu }}
+        - name: WORKER_MEMORY_REQUEST
+          value: {{ .Values.worker.resources.requests.memory }}
+        - name: WORKER_CPU_LIMIT
+          value: {{ .Values.worker.resources.limits.cpu }}
+        - name: WORKER_MEMORY_LIMIT
+          value: {{ .Values.worker.resources.limits.memory }}
+        
+        # KEDA configuration
+        - name: KEDA_POLLING_INTERVAL
+          value: "{{ .Values.keda.worker.pollingInterval | default 15 }}"
+        - name: KEDA_COOLDOWN_PERIOD
+          value: "{{ .Values.keda.worker.cooldownPeriod | default 120 }}"
+        - name: KEDA_MIN_REPLICAS
+          value: "{{ .Values.keda.worker.minReplicas | default 0 }}"
+        - name: KEDA_MAX_REPLICAS
+          value: "{{ .Values.keda.worker.maxReplicas | default 10 }}"
+        - name: KEDA_JOB_THRESHOLD
+          value: "{{ .Values.keda.worker.jobThreshold | default 1 }}"
+        
+        # Kubernetes configuration
+        - name: KUBERNETES_NAMESPACE
+          value: {{ .Values.namespace }}
+        
+        # Orchestrator configuration
+        - name: ORCHESTRATOR_PORT
+          value: "8080"
+        - name: LOG_LEVEL
+          value: {{ .Values.orchestrator.logLevel | default "info" }}
+        
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        resources:
+          requests:
+            cpu: {{ .Values.orchestrator.resources.requests.cpu }}
+            memory: {{ .Values.orchestrator.resources.requests.memory }}
+          limits:
+            cpu: {{ .Values.orchestrator.resources.limits.cpu }}
+            memory: {{ .Values.orchestrator.resources.limits.memory }}
+{{- end }}

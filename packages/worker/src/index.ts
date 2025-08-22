@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { ClaudeWorker } from "./claude-worker";
+import { QueuePersistentClaudeWorker } from "./queue-persistent-worker";
 import { SlackIntegration } from "./slack-integration";
 import type { WorkerConfig } from "./types";
 import logger from "./logger";
@@ -9,9 +10,54 @@ import logger from "./logger";
 export { ClaudeWorker } from "./claude-worker";
 
 /**
- * Main entry point
+ * Main entry point - now supports both queue-based and legacy workers
  */
 async function main() {
+  // Check if we should use queue-based worker (KEDA mode)
+  const workerMode = process.env.WORKER_MODE || "legacy";
+  
+  if (workerMode === "queue") {
+    logger.info("🔄 Starting in queue mode (simple deployment-based persistent worker)");
+    
+    // Get user ID and optional target thread from environment
+    const userId = process.env.USER_ID;
+    const targetThreadId = process.env.TARGET_THREAD_ID; // Optional - for thread-specific workers
+    
+    if (!userId) {
+      logger.error("❌ USER_ID environment variable is required for queue mode");
+      process.exit(1);
+    }
+    
+    try {
+      const queueWorker = new QueuePersistentClaudeWorker(userId, targetThreadId);
+      await queueWorker.start();
+      
+      // Keep the process running for persistent queue consumption
+      process.on("SIGTERM", async () => {
+        logger.info("Received SIGTERM, shutting down queue worker...");
+        await queueWorker.stop();
+        process.exit(0);
+      });
+      
+      process.on("SIGINT", async () => {
+        logger.info("Received SIGINT, shutting down queue worker...");
+        await queueWorker.stop();
+        process.exit(0);
+      });
+      
+      // Keep process alive
+      await new Promise(() => {}); // Wait forever
+      
+    } catch (error) {
+      logger.error("❌ Queue worker failed:", error);
+      process.exit(1);
+    }
+    
+    return;
+  }
+  
+  // Legacy one-shot worker mode
+  logger.info("🔄 Starting in legacy mode (one-shot worker)");
   const workerStartTime = Date.now();
   let worker: ClaudeWorker | null = null;
   
@@ -177,7 +223,7 @@ async function appendTerminationMessage(signal: string): Promise<void> {
 
 // Only start main() if explicitly requested via environment variable
 // This prevents side effects when importing ClaudeWorker class
-if (process.env.RUN_WORKER_MAIN === "true") {
+if (process.env.RUN_WORKER_MAIN === "true" || process.env.WORKER_MODE === "queue") {
   main();
 }
 
