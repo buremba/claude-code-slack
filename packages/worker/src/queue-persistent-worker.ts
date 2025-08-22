@@ -18,30 +18,33 @@ export class QueuePersistentClaudeWorker {
   private worker: ClaudeWorker | null = null;
   private config: WorkerConfig;
   private queueConsumer: WorkerQueueConsumer;
-  private botId: string;
-  private sessionKey: string;
+  private userId: string;
+  private targetThreadId?: string;
   private lastActivity: number = Date.now();
   private timeoutMinutes: number = 30; // Longer timeout for queue-based workers
   private isInitialized = false;
 
-  constructor() {
+  constructor(userId: string, targetThreadId?: string) {
+    this.userId = userId;
+    this.targetThreadId = targetThreadId;
+    
     // Load initial configuration from environment
     this.config = this.loadConfigFromEnv();
-    this.botId = process.env.BOT_ID || "default-slack-bot";
-    this.sessionKey = process.env.SESSION_KEY!;
     this.timeoutMinutes = parseInt(process.env.SESSION_TIMEOUT_MINUTES || "30");
     
-    // Initialize queue consumer
+    // Initialize queue consumer with user-based routing
     const connectionString = this.buildConnectionString();
     this.queueConsumer = new WorkerQueueConsumer(
       connectionString,
-      this.botId,
-      this.sessionKey
+      this.userId,
+      this.targetThreadId
     );
     
     logger.info(`🚀 Starting Queue-based Persistent Claude Worker`);
-    logger.info(`- Bot ID: ${this.botId}`);
-    logger.info(`- Session Key: ${this.sessionKey}`);
+    logger.info(`- User ID: ${this.userId}`);
+    if (this.targetThreadId) {
+      logger.info(`- Target Thread: ${this.targetThreadId}`);
+    }
     logger.info(`- Session timeout: ${this.timeoutMinutes} minutes`);
   }
 
@@ -222,7 +225,16 @@ export class QueuePersistentClaudeWorker {
  */
 async function main() {
   try {
-    const persistentWorker = new QueuePersistentClaudeWorker();
+    // Get user ID from environment - required for worker
+    const userId = process.env.USER_ID;
+    const targetThreadId = process.env.TARGET_THREAD_ID; // Optional
+    
+    if (!userId) {
+      logger.error("❌ USER_ID environment variable is required");
+      process.exit(1);
+    }
+    
+    const persistentWorker = new QueuePersistentClaudeWorker(userId, targetThreadId);
     await persistentWorker.start();
     
     // Setup graceful shutdown

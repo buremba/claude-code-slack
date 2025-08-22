@@ -88,7 +88,25 @@ worker:
     size: 10Gi
     storageClass: ""  # Use default storage class
 
-# Orchestrator removed - replaced with KEDA worker scaling
+# Orchestrator (KEDA-based worker management) configuration
+orchestrator:
+  enabled: true
+  replicas: 1
+  
+  image:
+    repository: peerbot-orchestrator
+    tag: latest
+    pullPolicy: Always
+  
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  
+  logLevel: info
 
 # PostgreSQL configuration
 postgresql:

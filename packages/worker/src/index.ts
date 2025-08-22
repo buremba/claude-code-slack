@@ -19,8 +19,17 @@ async function main() {
   if (workerMode === "queue") {
     logger.info("🔄 Starting in queue mode (KEDA-based persistent worker)");
     
+    // Get user ID and optional target thread from environment
+    const userId = process.env.USER_ID;
+    const targetThreadId = process.env.TARGET_THREAD_ID; // Optional - for thread-specific workers
+    
+    if (!userId) {
+      logger.error("❌ USER_ID environment variable is required for queue mode");
+      process.exit(1);
+    }
+    
     try {
-      const queueWorker = new QueuePersistentClaudeWorker();
+      const queueWorker = new QueuePersistentClaudeWorker(userId, targetThreadId);
       await queueWorker.start();
       
       // Keep the process running for persistent queue consumption

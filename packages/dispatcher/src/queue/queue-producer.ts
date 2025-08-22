@@ -14,17 +14,19 @@ export interface BotContext {
   platform: string;
 }
 
-export interface DirectMessagePayload {
-  botId: string;
+export interface WorkerDeploymentPayload {
   userId: string;
+  botId: string;
+  agentSessionId: string;
+  threadId: string;
   platform: string;
-  channelId: string;
+  platformUserId: string;
   messageId: string;
-  threadId?: string;
   messageText: string;
-  repositoryUrl: string;
+  channelId: string;
   platformMetadata: Record<string, any>;
   claudeOptions: Record<string, any>;
+  environmentVariables?: Record<string, string>;
 }
 
 export interface ThreadMessagePayload {
@@ -38,6 +40,12 @@ export interface ThreadMessagePayload {
   agentSessionId?: string;
   platformMetadata: Record<string, any>;
   claudeOptions: Record<string, any>;
+  // Routing metadata for thread-specific processing
+  routingMetadata?: {
+    targetThreadId: string;
+    agentSessionId: string;
+    userId: string;
+  };
 }
 
 export class QueueProducer {
@@ -103,11 +111,10 @@ export class QueueProducer {
   }
 
   /**
-   * Enqueue a direct message job (for new conversations)
+   * Enqueue a worker deployment request (for new conversations/threads)
    */
-  async enqueueDirectMessage(
-    queueName: string,
-    payload: DirectMessagePayload,
+  async enqueueWorkerDeployment(
+    payload: WorkerDeploymentPayload,
     options?: {
       priority?: number;
       retryLimit?: number;
@@ -120,28 +127,27 @@ export class QueueProducer {
     }
 
     try {
-      const jobId = await this.pgBoss.send(queueName, payload, {
+      const jobId = await this.pgBoss.send('direct_message', payload, {
         priority: options?.priority || 0,
         retryLimit: options?.retryLimit || 3,
         retryDelay: options?.retryDelay || 30,
         expireInHours: options?.expireInHours || 24,
-        singletonKey: `direct-${payload.botId}-${payload.channelId}-${payload.messageId}`, // Prevent duplicates
+        singletonKey: `deployment-${payload.userId}-${payload.threadId}-${payload.agentSessionId}`, // Prevent duplicates
       });
 
-      logger.info(`Enqueued direct message job ${jobId} for bot ${payload.botId}`);
+      logger.info(`Enqueued worker deployment job ${jobId} for user ${payload.userId}, thread ${payload.threadId}`);
       return jobId;
 
     } catch (error) {
-      logger.error(`Failed to enqueue direct message for bot ${payload.botId}:`, error);
+      logger.error(`Failed to enqueue worker deployment for user ${payload.userId}:`, error);
       throw error;
     }
   }
 
   /**
-   * Enqueue a thread message job (for continuing conversations)
+   * Enqueue a thread message job to user-specific queue
    */
   async enqueueThreadMessage(
-    queueName: string,
     payload: ThreadMessagePayload,
     options?: {
       priority?: number;
@@ -155,21 +161,32 @@ export class QueueProducer {
     }
 
     try {
-      const jobId = await this.pgBoss.send(queueName, payload, {
-        priority: options?.priority || 0,
+      // Send to user-specific queue
+      const userQueueName = this.getUserQueueName(payload.userId);
+      
+      const jobId = await this.pgBoss.send(userQueueName, payload, {
+        priority: options?.priority || 10, // Higher priority for user queue messages
         retryLimit: options?.retryLimit || 3,
         retryDelay: options?.retryDelay || 30,
         expireInHours: options?.expireInHours || 24,
-        singletonKey: `thread-${payload.botId}-${payload.threadId}-${payload.messageId}`, // Prevent duplicates
+        singletonKey: `thread-${payload.userId}-${payload.threadId}-${payload.messageId}`, // Prevent duplicates
       });
 
-      logger.info(`Enqueued thread message job ${jobId} for bot ${payload.botId}, thread ${payload.threadId}`);
+      logger.info(`Enqueued thread message job ${jobId} to user queue ${userQueueName}, thread ${payload.threadId}`);
       return jobId;
 
     } catch (error) {
-      logger.error(`Failed to enqueue thread message for bot ${payload.botId}:`, error);
+      logger.error(`Failed to enqueue thread message for user ${payload.userId}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Get user-specific queue name
+   */
+  private getUserQueueName(userId: string): string {
+    const sanitizedUserId = userId.replace(/[^a-z0-9]/gi, "_");
+    return `user_${sanitizedUserId}_queue`;
   }
 
   /**

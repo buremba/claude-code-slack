@@ -22,6 +22,12 @@ export interface ThreadMessagePayload {
   agentSessionId?: string;
   platformMetadata: Record<string, any>;
   claudeOptions: Record<string, any>;
+  // Routing metadata for thread-specific processing
+  routingMetadata?: {
+    targetThreadId: string;
+    agentSessionId: string;
+    userId: string;
+  };
 }
 
 export class WorkerQueueConsumer {
@@ -29,42 +35,48 @@ export class WorkerQueueConsumer {
   private isRunning = false;
   private currentWorker: ClaudeWorker | null = null;
   private isProcessing = false;
-  private botId: string;
-  private sessionKey: string;
+  private userId: string;
+  private targetThreadId?: string;
 
   constructor(
     connectionString: string,
-    botId: string,
-    sessionKey: string
+    userId: string,
+    targetThreadId?: string
   ) {
     this.pgBoss = new PgBoss(connectionString);
-    this.botId = botId;
-    this.sessionKey = sessionKey;
+    this.userId = userId;
+    this.targetThreadId = targetThreadId;
   }
 
   /**
-   * Start consuming messages from the thread_message queue
+   * Start consuming messages from the user queue
+   * Worker listens to all messages but only processes assigned thread
    */
   async start(): Promise<void> {
     try {
       await this.pgBoss.start();
       
-      // Generate queue name for this specific thread
-      const queueName = this.getThreadQueueName();
+      // Generate user queue name - listens to all messages for this user
+      const userQueueName = this.getUserQueueName();
       
-      // Register job handler for this thread's messages
+      // Register job handler for user queue messages
       await this.pgBoss.work(
-        queueName,
+        userQueueName,
         {
-          teamSize: 1, // Only one worker processes messages for this thread
-          teamConcurrency: 1, // Process messages sequentially
+          teamSize: 1, // Multiple workers can share the user queue
+          teamConcurrency: 1, // Process messages sequentially per worker
         },
-        this.handleThreadMessage.bind(this)
+        this.handleUserQueueMessage.bind(this)
       );
 
       this.isRunning = true;
-      logger.info(`✅ Worker queue consumer started for bot ${this.botId}, session ${this.sessionKey}`);
-      logger.info(`Listening to queue: ${queueName}`);
+      logger.info(`✅ Worker queue consumer started for user ${this.userId}`);
+      if (this.targetThreadId) {
+        logger.info(`🎯 Targeting thread: ${this.targetThreadId}`);
+      } else {
+        logger.info(`🎯 Processing all threads for user`);
+      }
+      logger.info(`📥 Listening to queue: ${userQueueName}`);
       
     } catch (error) {
       logger.error("Failed to start worker queue consumer:", error);
@@ -94,25 +106,38 @@ export class WorkerQueueConsumer {
   }
 
   /**
-   * Handle thread message jobs
+   * Handle user queue message jobs with thread-specific routing
    */
-  private async handleThreadMessage(job: PgBoss.Job<ThreadMessagePayload>): Promise<void> {
+  private async handleUserQueueMessage(job: PgBoss.Job<ThreadMessagePayload>): Promise<void> {
+    const data = job.data;
+
+    // Check if this message is for our target thread (if specified)
+    if (this.targetThreadId && data.routingMetadata?.targetThreadId !== this.targetThreadId) {
+      logger.debug(`Skipping message for thread ${data.routingMetadata?.targetThreadId}, expecting ${this.targetThreadId}`);
+      return; // Skip this message - not for our thread
+    }
+
+    // Check if message is for our user
+    if (data.userId !== this.userId) {
+      logger.warn(`Received message for user ${data.userId}, but this worker is for user ${this.userId}`);
+      return; // Skip this message - wrong user
+    }
+
     if (this.isProcessing) {
       logger.warn("Already processing a message, requeueing...");
       throw new Error("Worker busy - message will be retried");
     }
 
     this.isProcessing = true;
-    const data = job.data;
 
     try {
-      logger.info(`Processing thread message job ${job.id} for bot ${data.botId}, thread ${data.threadId}`);
+      logger.info(`Processing user queue message job ${job.id} for user ${data.userId}, thread ${data.threadId}`);
 
-      // User context should be set by orchestrator as environment variable
-      // process.env.CURRENT_USER_ID should already be set from orchestrator
-      if (!process.env.CURRENT_USER_ID) {
-        logger.warn(`CURRENT_USER_ID not set in environment, using userId from payload: ${data.userId}`);
-        process.env.CURRENT_USER_ID = data.userId;
+      // User context should be set by orchestrator as environment variable  
+      // The DATABASE_URL should already contain user-specific credentials
+      if (!process.env.USER_ID) {
+        logger.warn(`USER_ID not set in environment, using userId from payload: ${data.userId}`);
+        process.env.USER_ID = data.userId;
       }
 
       // Convert queue payload to WorkerConfig format
@@ -122,10 +147,10 @@ export class WorkerQueueConsumer {
       this.currentWorker = new ClaudeWorker(workerConfig);
       await this.currentWorker.execute();
       
-      logger.info(`✅ Successfully processed thread message job ${job.id}`);
+      logger.info(`✅ Successfully processed user queue message job ${job.id}`);
 
     } catch (error) {
-      logger.error(`❌ Failed to process thread message job ${job.id}:`, error);
+      logger.error(`❌ Failed to process user queue message job ${job.id}:`, error);
       
       // Re-throw to let pgboss handle retry logic
       throw error;
@@ -146,14 +171,13 @@ export class WorkerQueueConsumer {
   }
 
   /**
-   * Generate thread-specific queue name
-   * This allows each thread to have its own message queue
+   * Generate user-specific queue name
+   * Workers listen to all messages for their assigned user
    */
-  private getThreadQueueName(): string {
-    // Use bot and session key to create unique queue name
-    const sanitizedBotId = this.botId.replace(/[^a-z0-9]/gi, "_");
-    const sanitizedSessionKey = this.sessionKey.replace(/[^a-z0-9]/gi, "_");
-    return `thread_message_${sanitizedBotId}_${sanitizedSessionKey}`;
+  private getUserQueueName(): string {
+    // Use user ID to create user-specific queue name
+    const sanitizedUserId = this.userId.replace(/[^a-z0-9]/gi, "_");
+    return `user_${sanitizedUserId}_queue`;
   }
 
   /**
@@ -163,7 +187,7 @@ export class WorkerQueueConsumer {
     const platformMetadata = payload.platformMetadata;
     
     return {
-      sessionKey: this.sessionKey,
+      sessionKey: payload.agentSessionId || `session-${payload.threadId}`,
       userId: payload.userId,
       username: platformMetadata.githubUsername || `user-${payload.userId}`,
       channelId: payload.channelId,
@@ -200,16 +224,16 @@ export class WorkerQueueConsumer {
   getStatus(): {
     isRunning: boolean;
     isProcessing: boolean;
-    botId: string;
-    sessionKey: string;
+    userId: string;
+    targetThreadId?: string;
     queueName: string;
   } {
     return {
       isRunning: this.isRunning,
       isProcessing: this.isProcessing,
-      botId: this.botId,
-      sessionKey: this.sessionKey,
-      queueName: this.getThreadQueueName(),
+      userId: this.userId,
+      targetThreadId: this.targetThreadId,
+      queueName: this.getUserQueueName(),
     };
   }
 }

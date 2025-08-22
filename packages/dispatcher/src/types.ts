@@ -70,6 +70,21 @@ export interface WorkerJobRequest {
   resumeSessionId?: string; // Claude session ID to resume from
 }
 
+export interface WorkerDeploymentRequest {
+  userId: string;
+  botId: string;
+  agentSessionId: string;
+  threadId: string;
+  platform: string;
+  platformUserId: string;
+  messageId: string;
+  messageText: string;
+  channelId: string;
+  platformMetadata: Record<string, any>;
+  claudeOptions: Record<string, any>;
+  environmentVariables?: Record<string, string>;
+}
+
 export interface ThreadSession {
   sessionKey: string;
   threadTs?: string;

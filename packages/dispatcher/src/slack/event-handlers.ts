@@ -7,7 +7,7 @@ import type {
   SlackContext, 
   ThreadSession
 } from "../types";
-import { QueueProducer, type DirectMessagePayload, type ThreadMessagePayload } from "../queue/queue-producer";
+import { QueueProducer, type WorkerDeploymentPayload, type ThreadMessagePayload } from "../queue/queue-producer";
 import { SessionManager } from "@claude-code-slack/core-runner";
 import logger from "../logger";
 
@@ -382,16 +382,39 @@ export class SlackEventHandlers {
           },
         };
 
-        const jobId = await this.queueProducer.enqueueDirectMessage(
-          this.config.queues?.directMessage || "direct_message",
-          directPayload
-        );
+        const deploymentPayload: WorkerDeploymentPayload = {
+          userId: context.userId,
+          botId: this.getBotId(),
+          agentSessionId: existingClaudeSessionId || sessionKey,
+          threadId: threadTs,
+          platform: "slack",
+          platformUserId: context.userId,
+          messageId: context.messageTs,
+          messageText: userRequest,
+          channelId: context.channelId,
+          platformMetadata: {
+            teamId: context.teamId,
+            userDisplayName: context.userDisplayName,
+            repositoryUrl: repositoryUrl,
+            slackResponseChannel: context.channelId,
+            slackResponseTs: initialResponse.ts,
+            originalMessageTs: context.messageTs,
+          },
+          claudeOptions: {
+            allowedTools: this.config.claude.allowedTools,
+            model: this.config.claude.model,
+            timeoutMinutes: this.config.sessionTimeoutMinutes.toString(),
+            resumeSessionId: existingClaudeSessionId,
+          },
+        };
+
+        const jobId = await this.queueProducer.enqueueWorkerDeployment(deploymentPayload);
 
         logger.info(`Enqueued direct message job ${jobId} for session ${sessionKey}`);
         threadSession.status = "enqueued";
         
       } else {
-        // Enqueue to thread_message queue (worker should already exist)
+        // Enqueue to user-specific queue (worker should already exist)
         const threadPayload: ThreadMessagePayload = {
           botId: this.getBotId(),
           userId: context.userId,
@@ -404,6 +427,7 @@ export class SlackEventHandlers {
           platformMetadata: {
             teamId: context.teamId,
             userDisplayName: context.userDisplayName,
+            repositoryUrl: repositoryUrl,
             slackResponseChannel: context.channelId,
             slackResponseTs: initialResponse.ts,
             originalMessageTs: context.messageTs,
@@ -412,12 +436,15 @@ export class SlackEventHandlers {
             ...this.config.claude,
             timeoutMinutes: this.config.sessionTimeoutMinutes.toString(),
           },
+          // Add routing metadata for thread-specific processing
+          routingMetadata: {
+            targetThreadId: threadTs,
+            agentSessionId: existingClaudeSessionId || sessionKey,
+            userId: context.userId
+          }
         };
 
-        const jobId = await this.queueProducer.enqueueThreadMessage(
-          this.config.queues?.messageQueue || "message_queue",
-          threadPayload
-        );
+        const jobId = await this.queueProducer.enqueueThreadMessage(threadPayload);
 
         logger.info(`Enqueued thread message job ${jobId} for session ${sessionKey}`);
         threadSession.status = "enqueued";
