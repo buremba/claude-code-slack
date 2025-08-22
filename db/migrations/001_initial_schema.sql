@@ -59,20 +59,14 @@ ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_configs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE conversation_threads ENABLE ROW LEVEL SECURITY;
 
--- Create RLS policies for bot isolation
--- Users can only see data for their specific bot
-CREATE POLICY bot_isolation ON bots 
-FOR ALL USING (
-    bot_id = current_setting('app.current_bot_id', true)
-);
+-- Create RLS policies for user-based isolation
+-- Each user can see all bots but only their own conversation history
+CREATE POLICY user_isolation ON bots 
+FOR ALL USING (true); -- Users can see all bots
 
-CREATE POLICY user_isolation ON users 
+CREATE POLICY user_data_isolation ON users 
 FOR ALL USING (
-    platform_user_id = current_setting('app.current_user_id', true) OR
-    EXISTS (
-        SELECT 1 FROM bots 
-        WHERE bot_id = current_setting('app.current_bot_id', true)
-    )
+    platform_user_id = current_setting('app.current_user_id', true)
 );
 
 CREATE POLICY user_config_isolation ON user_configs 
@@ -83,32 +77,32 @@ FOR ALL USING (
     )
 );
 
-CREATE POLICY thread_bot_isolation ON conversation_threads 
+CREATE POLICY thread_user_isolation ON conversation_threads 
 FOR ALL USING (
-    bot_id = (
-        SELECT id FROM bots 
-        WHERE bot_id = current_setting('app.current_bot_id', true)
+    user_id IN (
+        SELECT id FROM users 
+        WHERE platform_user_id = current_setting('app.current_user_id', true)
     )
 );
 
--- Create function to set bot context for RLS
-CREATE OR REPLACE FUNCTION set_bot_context(bot_identifier VARCHAR(100))
+-- Create function to set user context for RLS
+CREATE OR REPLACE FUNCTION set_user_context(user_identifier VARCHAR(100))
 RETURNS VOID AS $$
 BEGIN
-    PERFORM set_config('app.current_bot_id', bot_identifier, true);
+    PERFORM set_config('app.current_user_id', user_identifier, true);
 END;
 $$ LANGUAGE plpgsql;
 
--- Create function to create bot-specific user roles
-CREATE OR REPLACE FUNCTION create_bot_user(
-    bot_identifier VARCHAR(100),
+-- Create function to create user-specific database roles
+CREATE OR REPLACE FUNCTION create_user_role(
+    platform_user_identifier VARCHAR(100),
     user_password VARCHAR(255)
 ) RETURNS VARCHAR(100) AS $$
 DECLARE
     role_name VARCHAR(100);
 BEGIN
-    -- Generate safe role name from bot ID
-    role_name := 'bot_' || translate(bot_identifier, '-@.', '___');
+    -- Generate safe role name from platform user ID
+    role_name := 'user_' || translate(platform_user_identifier, '-@.', '___');
     
     -- Create role if it doesn't exist
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN

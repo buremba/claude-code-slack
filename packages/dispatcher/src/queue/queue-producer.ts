@@ -173,10 +173,10 @@ export class QueueProducer {
   }
 
   /**
-   * Execute a query with bot context for RLS
+   * Execute a query with user context for RLS
    */
-  async queryWithBotContext<T>(
-    botId: string,
+  async queryWithUserContext<T>(
+    userId: string,
     query: string,
     params?: any[]
   ): Promise<{ rows: T[]; rowCount: number }> {
@@ -187,8 +187,8 @@ export class QueueProducer {
     const client = await this.pool.connect();
     
     try {
-      // Set bot context for RLS policies using PostgreSQL session configuration
-      await client.query("SELECT set_config('app.current_bot_id', $1, true)", [botId]);
+      // Set user context for RLS policies using PostgreSQL session configuration
+      await client.query("SELECT set_config('app.current_user_id', $1, true)", [userId]);
       
       const result = await client.query(query, params);
       return {

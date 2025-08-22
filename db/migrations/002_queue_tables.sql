@@ -20,12 +20,12 @@ CREATE TABLE queue_jobs (
 -- Enable RLS on queue jobs
 ALTER TABLE queue_jobs ENABLE ROW LEVEL SECURITY;
 
--- RLS policy for queue jobs (bot isolation)
-CREATE POLICY queue_jobs_bot_isolation ON queue_jobs 
+-- RLS policy for queue jobs (user isolation)
+CREATE POLICY queue_jobs_user_isolation ON queue_jobs 
 FOR ALL USING (
-    bot_id = (
-        SELECT id FROM bots 
-        WHERE bot_id = current_setting('app.current_bot_id', true)
+    user_id IN (
+        SELECT id FROM users 
+        WHERE platform_user_id = current_setting('app.current_user_id', true)
     )
 );
 
@@ -40,19 +40,19 @@ CREATE TABLE job_payloads (
 -- Enable RLS on job payloads (inherits from queue_jobs)
 ALTER TABLE job_payloads ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY job_payloads_bot_isolation ON job_payloads 
+CREATE POLICY job_payloads_user_isolation ON job_payloads 
 FOR ALL USING (
     queue_job_id IN (
         SELECT id FROM queue_jobs 
-        WHERE bot_id = (
-            SELECT id FROM bots 
-            WHERE bot_id = current_setting('app.current_bot_id', true)
+        WHERE user_id IN (
+            SELECT id FROM users 
+            WHERE platform_user_id = current_setting('app.current_user_id', true)
         )
     )
 );
 
--- Create function to enqueue jobs with bot context
-CREATE OR REPLACE FUNCTION enqueue_job_with_bot(
+-- Create function to enqueue jobs
+CREATE OR REPLACE FUNCTION enqueue_job(
     bot_identifier VARCHAR(100),
     p_queue_name VARCHAR(100),
     p_job_type VARCHAR(50),

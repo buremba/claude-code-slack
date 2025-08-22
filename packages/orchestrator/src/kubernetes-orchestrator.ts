@@ -260,7 +260,7 @@ export class KubernetesOrchestrator {
                     valueFrom: {
                       secretKeyRef: {
                         name: "peerbot-secrets",
-                        key: `db-user-${request.botId}`,
+                        key: `db-user-${request.userId}`,
                       },
                     },
                   },
@@ -269,7 +269,7 @@ export class KubernetesOrchestrator {
                     valueFrom: {
                       secretKeyRef: {
                         name: "peerbot-secrets",
-                        key: `db-password-${request.botId}`,
+                        key: `db-password-${request.userId}`,
                       },
                     },
                   },

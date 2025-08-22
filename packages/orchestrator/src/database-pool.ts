@@ -29,42 +29,42 @@ export class DatabasePool {
   }
 
   /**
-   * Get a database client with bot context set for RLS
+   * Get a database client with user context set for RLS
    */
-  async getClientWithBotContext(botId: string): Promise<PoolClient> {
+  async getClientWithUserContext(userId: string): Promise<PoolClient> {
     let client: PoolClient;
     
     try {
       client = await this.pool.connect();
     } catch (error) {
-      throw OrchestratorError.databaseError('getClientWithBotContext', error as Error);
+      throw OrchestratorError.databaseError('getClientWithUserContext', error as Error);
     }
     
     try {
-      // Set bot context for RLS policies using PostgreSQL session configuration
-      await client.query("SELECT set_config('app.current_bot_id', $1, true)", [botId]);
+      // Set user context for RLS policies using PostgreSQL session configuration
+      await client.query("SELECT set_config('app.current_user_id', $1, true)", [userId]);
       return client;
     } catch (error) {
       // Release client back to pool if context setting fails
       client.release();
       throw new OrchestratorError(
-        'getClientWithBotContext',
+        'getClientWithUserContext',
         ErrorCode.RLS_CONTEXT_FAILED,
-        `Failed to set RLS context for bot ${botId}: ${(error as Error).message}`,
+        `Failed to set RLS context for user ${userId}: ${(error as Error).message}`,
         error as Error
       );
     }
   }
 
   /**
-   * Execute a query with bot context
+   * Execute a query with user context
    */
-  async queryWithBotContext<T>(
-    botId: string,
+  async queryWithUserContext<T>(
+    userId: string,
     query: string,
     params?: any[]
   ): Promise<{ rows: T[]; rowCount: number }> {
-    const client = await this.getClientWithBotContext(botId);
+    const client = await this.getClientWithUserContext(userId);
     
     try {
       const result = await client.query(query, params);
@@ -78,13 +78,13 @@ export class DatabasePool {
   }
 
   /**
-   * Execute a transaction with bot context
+   * Execute a transaction with user context
    */
-  async transactionWithBotContext<T>(
-    botId: string,
+  async transactionWithUserContext<T>(
+    userId: string,
     callback: (client: PoolClient) => Promise<T>
   ): Promise<T> {
-    const client = await this.getClientWithBotContext(botId);
+    const client = await this.getClientWithUserContext(userId);
     
     try {
       await client.query('BEGIN');
@@ -122,6 +122,21 @@ export class DatabasePool {
    */
   async close(): Promise<void> {
     await this.pool.end();
+  }
+
+  /**
+   * Create user-specific database credentials
+   */
+  async createUserCredentials(platformUserId: string, password: string): Promise<string> {
+    try {
+      const result = await this.pool.query(
+        'SELECT create_user_role($1, $2) as role_name',
+        [platformUserId, password]
+      );
+      return result.rows[0].role_name;
+    } catch (error) {
+      throw OrchestratorError.databaseError('createUserCredentials', error as Error);
+    }
   }
 
   /**
