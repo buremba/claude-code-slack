@@ -254,7 +254,7 @@ export class ClaudeWorker {
         await this.slackIntegration.updateProgress("🔄 Resuming Claude session...");
       } else {
         logger.info("Creating new Claude session");
-        await this.slackIntegration.updateProgress("🤖 Creating new Claude session...");
+        await this.slackIntegration.updateProgress("🤖 Creating new agent session...");
       }
 
       // Prepare session context
@@ -269,9 +269,6 @@ export class ClaudeWorker {
         workingDirectory: this.workspaceManager.getCurrentWorkingDirectory(),
         customInstructions: this.generateCustomInstructions(),
       };
-
-      // Update progress to show we're starting Claude
-      await this.slackIntegration.updateProgress("🤖 Initializing Claude...");
 
       // Execute Claude session with conversation history
       logger.info(`[TIMING] Starting Claude session at: ${new Date().toISOString()}`);
