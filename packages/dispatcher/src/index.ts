@@ -3,7 +3,7 @@
 import { config as dotenvConfig } from 'dotenv';
 import { join } from 'path';
 import { App, ExpressReceiver, LogLevel } from "@slack/bolt";
-import { QueueSlackEventHandlers } from "./slack/queue-event-handlers";
+import { SlackEventHandlers } from "./slack/event-handlers";
 import { QueueProducer } from "./queue/queue-producer";
 import { GitHubRepositoryManager } from "./github/repository-manager";
 import { setupHealthEndpoints } from "./simple-http";
@@ -89,7 +89,7 @@ export class SlackDispatcher {
    */
   async start(): Promise<void> {
     try {
-      // Setup health endpoints for Kubernetes FIRST
+      // Setup health endpoints FIRST
       setupHealthEndpoints();
       
       // Start queue producer
@@ -180,8 +180,6 @@ export class SlackDispatcher {
       
       // Log configuration
       logger.info("Configuration:");
-      logger.info(`- Kubernetes Namespace: ${this.config.kubernetes.namespace}`);
-      logger.info(`- Worker Image: ${this.config.kubernetes.workerImage}`);
       logger.info(`- GitHub Organization: ${this.config.github.organization}`);
       logger.info(`- Session Timeout: ${this.config.sessionTimeoutMinutes} minutes`);
       logger.info(`- Signing Secret: ${this.config.slack.signingSecret?.substring(0, 8)}...`);
@@ -250,7 +248,7 @@ export class SlackDispatcher {
       
       // Initialize queue-based event handlers
       logger.info("Initializing queue-based event handlers");
-      new QueueSlackEventHandlers(
+      new SlackEventHandlers(
         this.app,
         this.queueProducer,
         this.repoManager,

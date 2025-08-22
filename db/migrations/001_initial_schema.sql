@@ -23,7 +23,6 @@ CREATE TABLE users (
     id SERIAL PRIMARY KEY,
     platform_user_id VARCHAR(100) NOT NULL,
     platform VARCHAR(50) NOT NULL,
-    github_username VARCHAR(100) NOT NULL,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(platform, platform_user_id)

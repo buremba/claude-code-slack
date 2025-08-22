@@ -4,22 +4,7 @@
  * Test utilities for dispatcher package
  */
 
-import type { KubernetesConfig, WorkerJobRequest } from "../types";
-
-/**
- * Factory for creating mock Kubernetes configurations
- */
-export function createMockKubernetesConfig(overrides: Partial<KubernetesConfig> = {}): KubernetesConfig {
-  return {
-    namespace: "test-namespace",
-    workerImage: "test/claude-worker:latest",
-    cpu: "500m",
-    memory: "1Gi",
-    timeoutSeconds: 3600,
-    kubeconfig: "/path/to/kubeconfig",
-    ...overrides,
-  };
-}
+import type { WorkerJobRequest } from "../types";
 
 /**
  * Factory for creating mock worker job requests
@@ -44,29 +29,6 @@ export function createMockWorkerJobRequest(overrides: Partial<WorkerJobRequest> 
   };
 }
 
-/**
- * Mock Kubernetes API implementations
- */
-export const mockKubernetesApi = {
-  batchV1: {
-    createNamespacedJob: jest.fn(),
-    readNamespacedJob: jest.fn(),
-    deleteNamespacedJob: jest.fn(),
-    listNamespacedJob: jest.fn(),
-  },
-  coreV1: {
-    createNamespacedSecret: jest.fn(),
-    readNamespacedSecret: jest.fn(),
-    createNamespacedConfigMap: jest.fn(),
-    readNamespacedConfigMap: jest.fn(),
-  },
-  kubeConfig: {
-    loadFromFile: jest.fn(),
-    loadFromCluster: jest.fn(),
-    loadFromDefault: jest.fn(),
-    makeApiClient: jest.fn(),
-  },
-};
 
 /**
  * Mock Slack app and event implementations
@@ -205,54 +167,6 @@ export function createMockSlackCommand(overrides: any = {}) {
   };
 }
 
-/**
- * Factory for creating mock Kubernetes Job manifests
- */
-export function createMockJobManifest(jobName: string, overrides: any = {}) {
-  return {
-    apiVersion: "batch/v1",
-    kind: "Job",
-    metadata: {
-      name: jobName,
-      namespace: "test-namespace",
-      labels: {
-        app: "claude-worker",
-        component: "worker",
-      },
-      annotations: {
-        "claude.ai/session-key": "test-session",
-        "claude.ai/user-id": "U123456789",
-      },
-    },
-    spec: {
-      activeDeadlineSeconds: 3600,
-      ttlSecondsAfterFinished: 300,
-      template: {
-        metadata: {
-          labels: {
-            app: "claude-worker",
-            component: "worker",
-          },
-        },
-        spec: {
-          restartPolicy: "Never",
-          containers: [
-            {
-              name: "claude-worker",
-              image: "test/claude-worker:latest",
-              resources: {
-                requests: { cpu: "500m", memory: "1Gi" },
-                limits: { cpu: "500m", memory: "1Gi" },
-              },
-              env: [],
-            },
-          ],
-        },
-      },
-    },
-    ...overrides,
-  };
-}
 
 /**
  * Rate limiting test helpers
@@ -411,7 +325,6 @@ export function setupMockEnvironment() {
   process.env.SLACK_SIGNING_SECRET = "test-signing-secret";
   process.env.GITHUB_TOKEN = "ghp_test_token";
   process.env.GCS_PROJECT_ID = "test-project";
-  process.env.KUBERNETES_NAMESPACE = "test-namespace";
 
   return () => {
     // Cleanup
@@ -419,7 +332,6 @@ export function setupMockEnvironment() {
     delete process.env.SLACK_SIGNING_SECRET;
     delete process.env.GITHUB_TOKEN;
     delete process.env.GCS_PROJECT_ID;
-    delete process.env.KUBERNETES_NAMESPACE;
   };
 }
 

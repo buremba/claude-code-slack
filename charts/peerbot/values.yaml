@@ -104,7 +104,6 @@ orchestrator:
 
 # PostgreSQL configuration
 postgresql:
-  enabled: true
   database: peerbot
   username: postgres
   
@@ -129,7 +128,7 @@ pgboss:
 # Queue names
 queues:
   directMessage: "direct_message"
-  threadMessage: "thread_message"
+  messageQueue: "message_queue"
 
 # Slack configuration
 slack:
