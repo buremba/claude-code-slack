@@ -40,25 +40,10 @@ describe("prepareMcpConfig", () => {
     },
   };
 
-  const mockPRContext: ParsedGitHubContext = {
-    ...mockContext,
-    eventName: "pull_request",
-    isPR: true,
-    entityNumber: 456,
-  };
-
   const mockContextWithSigning: ParsedGitHubContext = {
     ...mockContext,
     inputs: {
       ...mockContext.inputs,
-      useCommitSigning: true,
-    },
-  };
-
-  const mockPRContextWithSigning: ParsedGitHubContext = {
-    ...mockPRContext,
-    inputs: {
-      ...mockPRContext.inputs,
       useCommitSigning: true,
     },
   };
@@ -544,139 +529,5 @@ describe("prepareMcpConfig", () => {
     expect(parsed.mcpServers.github_file_ops.env.REPO_DIR).toBe(process.cwd());
 
     process.env.GITHUB_WORKSPACE = oldEnv;
-  });
-
-  test("should include github_ci server when context.isPR is true and actions:read permission is granted", async () => {
-    const oldEnv = process.env.ACTIONS_TOKEN;
-    process.env.ACTIONS_TOKEN = "workflow-token";
-
-    const contextWithPermissions = {
-      ...mockPRContext,
-      inputs: {
-        ...mockPRContext.inputs,
-        additionalPermissions: new Map([["actions", "read"]]),
-        useCommitSigning: true,
-      },
-    };
-
-    const result = await prepareMcpConfig({
-      githubToken: "test-token",
-      owner: "test-owner",
-      repo: "test-repo",
-      branch: "test-branch",
-      baseBranch: "main",
-      allowedTools: [],
-      context: contextWithPermissions,
-    });
-
-    const parsed = JSON.parse(result);
-    expect(parsed.mcpServers.github_ci).toBeDefined();
-    expect(parsed.mcpServers.github_ci.env.GITHUB_TOKEN).toBe("workflow-token");
-    expect(parsed.mcpServers.github_ci.env.PR_NUMBER).toBe("456");
-    expect(parsed.mcpServers.github_file_ops).toBeDefined();
-
-    process.env.ACTIONS_TOKEN = oldEnv;
-  });
-
-  test("should not include github_ci server when context.isPR is false", async () => {
-    const result = await prepareMcpConfig({
-      githubToken: "test-token",
-      owner: "test-owner",
-      repo: "test-repo",
-      branch: "test-branch",
-      baseBranch: "main",
-      allowedTools: [],
-      context: mockContextWithSigning,
-    });
-
-    const parsed = JSON.parse(result);
-    expect(parsed.mcpServers.github_ci).not.toBeDefined();
-    expect(parsed.mcpServers.github_file_ops).toBeDefined();
-  });
-
-  test("should not include github_ci server when actions:read permission is not granted", async () => {
-    const oldTokenEnv = process.env.ACTIONS_TOKEN;
-    process.env.ACTIONS_TOKEN = "workflow-token";
-
-    const result = await prepareMcpConfig({
-      githubToken: "test-token",
-      owner: "test-owner",
-      repo: "test-repo",
-      branch: "test-branch",
-      baseBranch: "main",
-      allowedTools: [],
-      context: mockPRContextWithSigning,
-    });
-
-    const parsed = JSON.parse(result);
-    expect(parsed.mcpServers.github_ci).not.toBeDefined();
-    expect(parsed.mcpServers.github_file_ops).toBeDefined();
-
-    process.env.ACTIONS_TOKEN = oldTokenEnv;
-  });
-
-  test("should parse additional_permissions with multiple lines correctly", async () => {
-    const oldTokenEnv = process.env.ACTIONS_TOKEN;
-    process.env.ACTIONS_TOKEN = "workflow-token";
-
-    const contextWithPermissions = {
-      ...mockPRContext,
-      inputs: {
-        ...mockPRContext.inputs,
-        additionalPermissions: new Map([
-          ["actions", "read"],
-          ["future", "permission"],
-        ]),
-      },
-    };
-
-    const result = await prepareMcpConfig({
-      githubToken: "test-token",
-      owner: "test-owner",
-      repo: "test-repo",
-      branch: "test-branch",
-      baseBranch: "main",
-      allowedTools: [],
-      context: contextWithPermissions,
-    });
-
-    const parsed = JSON.parse(result);
-    expect(parsed.mcpServers.github_ci).toBeDefined();
-    expect(parsed.mcpServers.github_ci.env.GITHUB_TOKEN).toBe("workflow-token");
-
-    process.env.ACTIONS_TOKEN = oldTokenEnv;
-  });
-
-  test("should warn when actions:read is requested but token lacks permission", async () => {
-    const oldTokenEnv = process.env.ACTIONS_TOKEN;
-    process.env.ACTIONS_TOKEN = "invalid-token";
-
-    const contextWithPermissions = {
-      ...mockPRContext,
-      inputs: {
-        ...mockPRContext.inputs,
-        additionalPermissions: new Map([["actions", "read"]]),
-      },
-    };
-
-    const result = await prepareMcpConfig({
-      githubToken: "test-token",
-      owner: "test-owner",
-      repo: "test-repo",
-      branch: "test-branch",
-      baseBranch: "main",
-      allowedTools: [],
-      context: contextWithPermissions,
-    });
-
-    const parsed = JSON.parse(result);
-    expect(parsed.mcpServers.github_ci).toBeDefined();
-    expect(consoleWarningSpy).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "The github_ci MCP server requires 'actions: read' permission",
-      ),
-    );
-
-    process.env.ACTIONS_TOKEN = oldTokenEnv;
   });
 });

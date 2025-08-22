@@ -906,7 +906,7 @@ describe("buildAllowedToolsString", () => {
   });
 
   test("should return correct tools with default parameters", () => {
-    const result = buildAllowedToolsString([], false, false);
+    const result = buildAllowedToolsString([], false);
 
     // The base tools should be in the result
     expect(result).toContain("Edit");
@@ -947,38 +947,8 @@ describe("buildAllowedToolsString", () => {
     expect(basePlusCustom).toContain("Tool3");
   });
 
-  test("should include GitHub Actions tools when includeActionsTools is true", () => {
-    const result = buildAllowedToolsString([], true);
-
-    // Base tools should be present
-    expect(result).toContain("Edit");
-    expect(result).toContain("Glob");
-
-    // GitHub Actions tools should be included
-    expect(result).toContain("mcp__github_ci__get_ci_status");
-    expect(result).toContain("mcp__github_ci__get_workflow_run_details");
-    expect(result).toContain("mcp__github_ci__download_job_log");
-  });
-
-  test("should include both custom and Actions tools when both provided", () => {
-    const customTools = ["Tool1", "Tool2"];
-    const result = buildAllowedToolsString(customTools, true);
-
-    // Base tools should be present
-    expect(result).toContain("Edit");
-
-    // Custom tools should be included
-    expect(result).toContain("Tool1");
-    expect(result).toContain("Tool2");
-
-    // GitHub Actions tools should be included
-    expect(result).toContain("mcp__github_ci__get_ci_status");
-    expect(result).toContain("mcp__github_ci__get_workflow_run_details");
-    expect(result).toContain("mcp__github_ci__download_job_log");
-  });
-
   test("should include commit signing tools when useCommitSigning is true", () => {
-    const result = buildAllowedToolsString([], false, true);
+    const result = buildAllowedToolsString([], true);
 
     // Base tools should be present
     expect(result).toContain("Edit");
@@ -999,7 +969,7 @@ describe("buildAllowedToolsString", () => {
   });
 
   test("should include specific Bash git commands when useCommitSigning is false", () => {
-    const result = buildAllowedToolsString([], false, false);
+    const result = buildAllowedToolsString([], false);
 
     // Base tools should be present
     expect(result).toContain("Edit");
@@ -1028,9 +998,9 @@ describe("buildAllowedToolsString", () => {
     expect(result).not.toContain("mcp__github_file_ops__delete_files");
   });
 
-  test("should handle all combinations of options", () => {
+  test("should handle custom tools with commit signing disabled", () => {
     const customTools = ["CustomTool1", "CustomTool2"];
-    const result = buildAllowedToolsString(customTools, true, false);
+    const result = buildAllowedToolsString(customTools, false);
 
     // Base tools should be present
     expect(result).toContain("Edit");
@@ -1039,9 +1009,6 @@ describe("buildAllowedToolsString", () => {
     // Custom tools should be included
     expect(result).toContain("CustomTool1");
     expect(result).toContain("CustomTool2");
-
-    // GitHub Actions tools should be included
-    expect(result).toContain("mcp__github_ci__get_ci_status");
 
     // Comment tool from minimal server should be included
     expect(result).toContain("mcp__github_comment__update_claude_comment");

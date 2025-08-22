@@ -160,9 +160,9 @@ jobs:
           #   API_URL: https://api.example.com
           # Optional: limit the number of conversation turns
           # max_turns: "5"
-          # Optional: grant additional permissions (requires corresponding GitHub token permissions)
+          # Optional: grant additional permissions (reserved for future use)
           # additional_permissions: |
-          #   actions: read
+          #   permission: level
 ```
 
 ## Inputs
@@ -194,7 +194,7 @@ jobs:
 | `branch_prefix`                | The prefix to use for Claude branches (defaults to 'claude/', use 'claude-' for dash format)                           | No       | `claude/` |
 | `claude_env`                   | Custom environment variables to pass to Claude Code execution (YAML format)                                            | No       | ""        |
 | `settings`                     | Claude Code settings as JSON string or path to settings JSON file                                                      | No       | ""        |
-| `additional_permissions`       | Additional permissions to enable. Currently supports 'actions: read' for viewing workflow results                      | No       | ""        |
+| `additional_permissions`       | Additional permissions to enable (reserved for future use)                                                             | No       | ""        |
 | `experimental_allowed_domains` | Restrict network access to these domains only (newline-separated).                                                     | No       | ""        |
 | `use_commit_signing`           | Enable commit signing using GitHub's commit signature verification. When false, Claude uses standard git commands      | No       | `false`   |
 
@@ -490,7 +490,6 @@ This action is built on top of [`anthropics/claude-code-base-action`](https://gi
   - When triggered on an **issue**: Always creates a new branch for the work
   - When triggered on an **open PR**: Always pushes directly to the existing PR branch
   - When triggered on a **closed PR**: Creates a new branch since the original is no longer active
-- **View GitHub Actions Results**: Can access workflow runs, job logs, and test results on the PR where it's tagged when `actions: read` permission is configured (see [Additional Permissions for CI/CD Integration](#additional-permissions-for-cicd-integration))
 
 ### What Claude Cannot Do
 
@@ -502,75 +501,6 @@ This action is built on top of [`anthropics/claude-code-base-action`](https://gi
 - **Perform Branch Operations**: Cannot merge branches, rebase, or perform other git operations beyond pushing commits
 
 ## Advanced Configuration
-
-### Additional Permissions for CI/CD Integration
-
-The `additional_permissions` input allows Claude to access GitHub Actions workflow information when you grant the necessary permissions. This is particularly useful for analyzing CI/CD failures and debugging workflow issues.
-
-#### Enabling GitHub Actions Access
-
-To allow Claude to view workflow run results, job logs, and CI status:
-
-1. **Grant the necessary permission to your GitHub token**:
-
-   - When using the default `GITHUB_TOKEN`, add the `actions: read` permission to your workflow:
-
-   ```yaml
-   permissions:
-     contents: write
-     pull-requests: write
-     issues: write
-     actions: read # Add this line
-   ```
-
-2. **Configure the action with additional permissions**:
-
-   ```yaml
-   - uses: anthropics/claude-code-action@beta
-     with:
-       anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-       additional_permissions: |
-         actions: read
-       # ... other inputs
-   ```
-
-3. **Claude will automatically get access to CI/CD tools**:
-   When you enable `actions: read`, Claude can use the following MCP tools:
-   - `mcp__github_ci__get_ci_status` - View workflow run statuses
-   - `mcp__github_ci__get_workflow_run_details` - Get detailed workflow information
-   - `mcp__github_ci__download_job_log` - Download and analyze job logs
-
-#### Example: Debugging Failed CI Runs
-
-```yaml
-name: Claude CI Helper
-on:
-  issue_comment:
-    types: [created]
-
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  actions: read # Required for CI access
-
-jobs:
-  claude-ci-helper:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: anthropics/claude-code-action@beta
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          additional_permissions: |
-            actions: read
-          # Now Claude can respond to "@claude why did the CI fail?"
-```
-
-**Important Notes**:
-
-- The GitHub token must have the `actions: read` permission in your workflow
-- If the permission is missing, Claude will warn you and suggest adding it
-- Currently, only `actions: read` is supported, but the format allows for future extensions
 
 ### Custom Environment Variables
 

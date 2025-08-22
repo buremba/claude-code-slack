@@ -36,7 +36,6 @@ const DISALLOWED_TOOLS = ["WebSearch", "WebFetch"];
 
 export function buildAllowedToolsString(
   customAllowedTools?: string[],
-  includeActionsTools: boolean = false,
   useCommitSigning: boolean = false,
 ): string {
   let baseTools = [...BASE_ALLOWED_TOOLS];
@@ -62,15 +61,6 @@ export function buildAllowedToolsString(
       "Bash(git rm:*)",
       "Bash(git config user.name:*)",
       "Bash(git config user.email:*)",
-    );
-  }
-
-  // Add GitHub Actions MCP tools if enabled
-  if (includeActionsTools) {
-    baseTools.push(
-      "mcp__github_ci__get_ci_status",
-      "mcp__github_ci__get_workflow_run_details",
-      "mcp__github_ci__download_job_log",
     );
   }
 
@@ -837,10 +827,6 @@ export async function createPrompt(
     );
 
     // Set allowed tools
-    const hasActionsReadPermission =
-      context.inputs.additionalPermissions.get("actions") === "read" &&
-      context.isPR;
-
     // Get mode-specific tools
     const modeAllowedTools = mode.getAllowedTools();
     const modeDisallowedTools = mode.getDisallowedTools();
@@ -857,7 +843,6 @@ export async function createPrompt(
 
     const allAllowedTools = buildAllowedToolsString(
       combinedAllowedTools,
-      hasActionsReadPermission,
       context.inputs.useCommitSigning,
     );
     const allDisallowedTools = buildDisallowedToolsString(
