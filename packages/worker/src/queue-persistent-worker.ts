@@ -49,9 +49,9 @@ export class QueuePersistentClaudeWorker {
     const host = process.env.DATABASE_HOST || "localhost";
     const port = process.env.DATABASE_PORT || "5432";
     const database = process.env.DATABASE_NAME || "peerbot";
-    const username = process.env.DATABASE_USER || "postgres";
-    const password = process.env.DATABASE_PASSWORD || "";
-    
+    const username = encodeURIComponent(process.env.DATABASE_USER || "postgres");
+    const password = encodeURIComponent(process.env.DATABASE_PASSWORD || "");
+
     return `postgres://${username}:${password}@${host}:${port}/${database}`;
   }
 

@@ -503,10 +503,15 @@ export class SlackEventHandlers {
     return true;
   }
 
-  // Placeholder implementations for other methods
-  private async loadSessionMapping(username: string, sessionKey: string): Promise<string | undefined> {
-    // TODO: Implement session mapping loading
-    return undefined;
+  /**
+   * Load previously stored Claude session mapping for a thread
+   * Currently uses in-memory map but can be extended to persistent storage
+   */
+  private async loadSessionMapping(
+    _username: string,
+    sessionKey: string,
+  ): Promise<string | undefined> {
+    return this.sessionMappings.get(sessionKey);
   }
 
   private async getOrCreateUserMapping(slackUserId: string, client: any): Promise<string> {
@@ -553,24 +558,135 @@ export class SlackEventHandlers {
     }, 60000);
   }
 
-  private async handleBlockAction(actionId: string, userId: string, channelId: string, messageTs: string, body: any, client: any): Promise<void> {
-    // TODO: Implement block action handling
+  private async handleBlockAction(
+    actionId: string,
+    userId: string,
+    channelId: string,
+    messageTs: string,
+    body: any,
+    client: any
+  ): Promise<void> {
     logger.info(`Handling block action: ${actionId}`);
+
+    switch (actionId) {
+      case "open_repository_override_modal":
+        await client.views.open({
+          trigger_id: body.trigger_id,
+          view: {
+            type: "modal",
+            callback_id: "repository_override_modal",
+            private_metadata: JSON.stringify({
+              channel_id: channelId,
+              thread_ts: messageTs,
+            }),
+            title: { type: "plain_text", text: "Repository" },
+            submit: { type: "plain_text", text: "Save" },
+            close: { type: "plain_text", text: "Cancel" },
+            blocks: [
+              {
+                type: "input",
+                block_id: "repo_input",
+                label: { type: "plain_text", text: "Repository URL" },
+                element: {
+                  type: "plain_text_input",
+                  action_id: "repo_url",
+                  placeholder: { type: "plain_text", text: "https://github.com/user/repo" },
+                },
+              },
+            ],
+          },
+        });
+        break;
+
+      default:
+        await client.chat.postEphemeral({
+          channel: channelId,
+          user: userId,
+          text: `Unsupported action: ${actionId}`,
+        });
+    }
   }
 
   private async updateAppHome(userId: string, client: any): Promise<void> {
-    // TODO: Implement app home update
     logger.info(`Updating app home for user: ${userId}`);
+    const homeView = {
+      type: "home",
+      blocks: [
+        {
+          type: "section",
+          text: { type: "mrkdwn", text: "Welcome to Claude Code!" },
+        },
+      ],
+    };
+
+    await client.views.publish({ user_id: userId, view: homeView });
   }
 
-  private async handleRepositoryOverrideSubmission(userId: string, view: any, client: any): Promise<void> {
-    // TODO: Implement repository override submission handling
+  private async handleRepositoryOverrideSubmission(
+    userId: string,
+    view: any,
+    client: any
+  ): Promise<void> {
     logger.info(`Handling repository override submission for user: ${userId}`);
+
+    const repoUrl = view.state.values?.repo_input?.repo_url?.value?.trim();
+    const metadata = view.private_metadata ? JSON.parse(view.private_metadata) : {};
+    const channelId = metadata.channel_id;
+    const threadTs = metadata.thread_ts;
+
+    if (!repoUrl) {
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: "Please provide a repository URL.",
+      });
+      return;
+    }
+
+    const username = await this.getOrCreateUserMapping(userId, client);
+    
+    // Save to database instead of just memory cache
+    try {
+      await this.saveUserRepositoryUrl(username, userId, repoUrl);
+      
+      // Also update memory cache for immediate use
+      this.repositoryCache.set(username, {
+        repository: { repositoryUrl: repoUrl },
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      logger.error(`Failed to save repository URL for ${username}:`, error);
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: "❌ Failed to save repository URL. Please try again.",
+      });
+      return;
+    }
+
+    if (channelId && threadTs) {
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        text: `✅ Repository set to ${repoUrl}`,
+      });
+    }
   }
 
   private extractViewInputs(stateValues: any): string {
-    // TODO: Implement view input extraction
-    return 'Form submitted (input extraction not implemented)';
+    const inputs: string[] = [];
+    for (const block of Object.values(stateValues || {})) {
+      for (const action of Object.values(block as any)) {
+        const value =
+          (action as any).value ||
+          (action as any).selected_option?.value ||
+          "";
+        if (value) {
+          inputs.push(value);
+        }
+      }
+    }
+    return inputs.join("\n");
   }
 
   /**

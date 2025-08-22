@@ -65,9 +65,17 @@ export class SlackDispatcher {
       logger.info("Initialized Slack app in Socket mode");
     }
 
-    // Initialize queue producer
+    // Initialize queue producer with database config for user configs
     logger.info("Initializing queue mode");
-    this.queueProducer = new QueueProducer(config.queues.connectionString);
+    const databaseConfig = {
+      host: process.env.DATABASE_HOST || 'localhost',
+      port: parseInt(process.env.DATABASE_PORT || '5432'),
+      database: process.env.DATABASE_NAME || 'peerbot',
+      username: process.env.DATABASE_USERNAME || 'postgres',
+      password: process.env.DATABASE_PASSWORD || '',
+      ssl: process.env.DATABASE_SSL === 'true'
+    };
+    this.queueProducer = new QueueProducer(config.queues.connectionString, databaseConfig);
     this.repoManager = new GitHubRepositoryManager(config.github);
 
     this.setupErrorHandling();

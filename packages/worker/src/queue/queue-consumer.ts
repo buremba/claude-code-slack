@@ -49,9 +49,6 @@ export class WorkerQueueConsumer {
     try {
       await this.pgBoss.start();
       
-      // Set bot context for RLS
-      await this.setBotContext(this.botId);
-      
       // Generate queue name for this specific thread
       const queueName = this.getThreadQueueName();
       
@@ -107,9 +104,16 @@ export class WorkerQueueConsumer {
 
     this.isProcessing = true;
     const data = job.data;
-    
+
     try {
       logger.info(`Processing thread message job ${job.id} for bot ${data.botId}, thread ${data.threadId}`);
+
+      // User context should be set by orchestrator as environment variable
+      // process.env.CURRENT_USER_ID should already be set from orchestrator
+      if (!process.env.CURRENT_USER_ID) {
+        logger.warn(`CURRENT_USER_ID not set in environment, using userId from payload: ${data.userId}`);
+        process.env.CURRENT_USER_ID = data.userId;
+      }
 
       // Convert queue payload to WorkerConfig format
       const workerConfig = this.payloadToWorkerConfig(data);
@@ -181,20 +185,6 @@ export class WorkerQueueConsumer {
         githubToken: process.env.GITHUB_TOKEN!,
       },
     };
-  }
-
-  /**
-   * Set bot context for RLS policies
-   */
-  private async setBotContext(botId: string): Promise<void> {
-    try {
-      // Set bot context in environment for RLS
-      process.env.CURRENT_BOT_ID = botId;
-      logger.debug(`Set bot context for worker: ${botId}`);
-    } catch (error) {
-      logger.error(`Failed to set bot context for ${botId}:`, error);
-      throw error;
-    }
   }
 
   /**

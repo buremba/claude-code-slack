@@ -21,10 +21,16 @@ CREATE TABLE queue_jobs (
 ALTER TABLE queue_jobs ENABLE ROW LEVEL SECURITY;
 
 -- RLS policy for queue jobs (user isolation)
-CREATE POLICY queue_jobs_user_isolation ON queue_jobs 
+CREATE POLICY queue_jobs_user_isolation ON queue_jobs
 FOR ALL USING (
     user_id IN (
-        SELECT id FROM users 
+        SELECT id FROM users
+        WHERE platform_user_id = current_setting('app.current_user_id', true)
+    )
+)
+WITH CHECK (
+    user_id IN (
+        SELECT id FROM users
         WHERE platform_user_id = current_setting('app.current_user_id', true)
     )
 );
@@ -40,12 +46,21 @@ CREATE TABLE job_payloads (
 -- Enable RLS on job payloads (inherits from queue_jobs)
 ALTER TABLE job_payloads ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY job_payloads_user_isolation ON job_payloads 
+CREATE POLICY job_payloads_user_isolation ON job_payloads
 FOR ALL USING (
     queue_job_id IN (
-        SELECT id FROM queue_jobs 
+        SELECT id FROM queue_jobs
         WHERE user_id IN (
-            SELECT id FROM users 
+            SELECT id FROM users
+            WHERE platform_user_id = current_setting('app.current_user_id', true)
+        )
+    )
+)
+WITH CHECK (
+    queue_job_id IN (
+        SELECT id FROM queue_jobs
+        WHERE user_id IN (
+            SELECT id FROM users
             WHERE platform_user_id = current_setting('app.current_user_id', true)
         )
     )
@@ -134,9 +149,3 @@ JOIN users u ON qj.user_id = u.id
 LEFT JOIN conversation_threads ct ON qj.thread_id = ct.id
 JOIN job_payloads jp ON qj.id = jp.queue_job_id
 WHERE qj.status IN ('pending', 'active');
-
--- Grant permissions to bot roles
--- This will be applied when roles are created
-GRANT SELECT, INSERT, UPDATE ON queue_jobs TO PUBLIC;
-GRANT SELECT, INSERT ON job_payloads TO PUBLIC;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO PUBLIC;

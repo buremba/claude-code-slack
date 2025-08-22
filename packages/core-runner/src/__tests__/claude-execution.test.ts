@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { describe, it, expect, beforeEach, afterEach, mock, jest } from "bun:test";
+jest.mock = mock.module;
 import { spawn } from "child_process";
 import type { ChildProcess } from "child_process";
 
@@ -8,7 +9,9 @@ import type { ChildProcess } from "child_process";
 // we'll create tests based on the expected functionality from the previous analysis
 
 // Mock child_process
-jest.mock("child_process");
+jest.mock("child_process", () => ({
+  spawn: jest.fn(),
+}));
 const mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
 
 describe("Claude Execution", () => {

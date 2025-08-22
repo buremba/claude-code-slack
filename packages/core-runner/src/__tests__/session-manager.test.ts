@@ -1,12 +1,15 @@
 #!/usr/bin/env bun
 
 import { describe, it, expect, beforeEach, afterEach, mock, jest } from "bun:test";
+jest.mock = mock.module;
 import { SessionManager } from "../session-manager";
 import { GcsStorage } from "../storage/gcs";
 import type { SessionContext, ConversationMessage, ProgressUpdate, SessionError } from "../types";
 
 // Mock GcsStorage
-jest.mock("../storage/gcs");
+jest.mock("../storage/gcs", () => ({
+  GcsStorage: jest.fn(),
+}));
 const MockedGcsStorage = GcsStorage as jest.MockedClass<typeof GcsStorage>;
 
 describe("SessionManager", () => {
