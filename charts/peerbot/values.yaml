@@ -85,6 +85,52 @@ worker:
     size: 10Gi
     storageClass: ""  # Use default storage class
 
+# Orchestrator (queue consumer) configuration
+orchestrator:
+  replicas: 1
+  
+  image:
+    repository: peerbot-orchestrator
+    tag: latest
+    pullPolicy: Always
+  
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# PostgreSQL configuration
+postgresql:
+  enabled: true
+  database: peerbot
+  username: postgres
+  
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  
+  storage:
+    size: 10Gi
+  storageClass: ""  # Use default storage class
+
+# pgboss queue configuration
+pgboss:
+  retryLimit: 3
+  retryDelay: 30
+  expireInHours: 24
+
+# Queue names
+queues:
+  directMessage: "direct_message"
+  threadMessage: "thread_message"
+
 # Slack configuration
 slack:
   # Socket mode vs HTTP mode
@@ -138,6 +184,7 @@ secrets:
   slackBotToken: ""
   slackSigningSecret: ""
   githubToken: ""
+  postgresqlPassword: ""
 
 # ConfigMap data
 config:

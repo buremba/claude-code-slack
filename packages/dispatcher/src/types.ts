@@ -34,6 +34,15 @@ export interface GitHubConfig {
   repoTemplate?: string;
 }
 
+export interface QueueConfig {
+  directMessage: string;
+  threadMessage: string;
+  connectionString: string;
+  retryLimit?: number;
+  retryDelay?: number;
+  expireInHours?: number;
+}
+
 export interface DispatcherConfig {
   slack: SlackConfig;
   kubernetes: KubernetesConfig;
@@ -41,6 +50,7 @@ export interface DispatcherConfig {
   claude: Partial<ClaudeExecutionOptions>;
   sessionTimeoutMinutes: number;
   logLevel?: LogLevel;
+  queues?: QueueConfig;
 }
 
 export interface SlackContext {

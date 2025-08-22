@@ -8,6 +8,10 @@ build:
     context: .
     docker:
       dockerfile: Dockerfile.dispatcher
+  - image: peerbot-orchestrator
+    context: .
+    docker:
+      dockerfile: Dockerfile.orchestrator
   - image: claude-worker
     context: .
     docker:
@@ -27,6 +31,7 @@ deploy:
       - charts/peerbot/values-local.yaml
       setValueTemplates:
         dispatcher.image.tag: "{{.IMAGE_TAG_peerbot_dispatcher}}"
+        orchestrator.image.tag: "{{.IMAGE_TAG_peerbot_orchestrator}}"
         worker.image.tag: "{{.IMAGE_TAG_claude_worker}}"
       setValues:
         dispatcher.socketMode: "true"
@@ -35,6 +40,8 @@ deploy:
         service.type: ClusterIP
         dispatcher.image.pullPolicy: IfNotPresent
         dispatcher.image.repository: peerbot-dispatcher
+        orchestrator.image.pullPolicy: IfNotPresent
+        orchestrator.image.repository: peerbot-orchestrator
         worker.image.pullPolicy: IfNotPresent
         worker.image.repository: claude-worker
 portForward:

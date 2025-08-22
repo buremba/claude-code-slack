@@ -4,6 +4,8 @@ import { config as dotenvConfig } from 'dotenv';
 import { join } from 'path';
 import { App, ExpressReceiver, LogLevel } from "@slack/bolt";
 import { SlackEventHandlers } from "./slack/event-handlers";
+import { QueueSlackEventHandlers } from "./slack/queue-event-handlers";
+import { QueueProducer } from "./queue/queue-producer";
 import { KubernetesJobManager } from "./kubernetes/job-manager";
 import { GitHubRepositoryManager } from "./github/repository-manager";
 import { setupHealthEndpoints } from "./simple-http";
@@ -12,12 +14,15 @@ import logger from "./logger";
 
 export class SlackDispatcher {
   private app: App;
-  private jobManager: KubernetesJobManager;
+  private jobManager?: KubernetesJobManager;
+  private queueProducer?: QueueProducer;
   private repoManager: GitHubRepositoryManager;
   private config: DispatcherConfig;
+  private isQueueMode: boolean;
 
   constructor(config: DispatcherConfig) {
     this.config = config;
+    this.isQueueMode = !!config.queues?.connectionString;
 
     // Initialize Slack app based on mode
     if (config.slack.socketMode === false) {
@@ -61,8 +66,14 @@ export class SlackDispatcher {
       logger.info("Initialized Slack app in Socket mode");
     }
 
-    // Initialize managers
-    this.jobManager = new KubernetesJobManager(config.kubernetes);
+    // Initialize managers based on mode
+    if (this.isQueueMode) {
+      logger.info("Initializing in QUEUE mode");
+      this.queueProducer = new QueueProducer(config.queues!.connectionString);
+    } else {
+      logger.info("Initializing in LEGACY mode (direct K8s)");
+      this.jobManager = new KubernetesJobManager(config.kubernetes);
+    }
     this.repoManager = new GitHubRepositoryManager(config.github);
 
     this.setupErrorHandling();
@@ -86,6 +97,12 @@ export class SlackDispatcher {
     try {
       // Setup health endpoints for Kubernetes FIRST
       setupHealthEndpoints();
+      
+      // Start queue producer if in queue mode
+      if (this.isQueueMode && this.queueProducer) {
+        await this.queueProducer.start();
+        logger.info("✅ Queue producer started");
+      }
       
       // Get bot's own user ID and bot ID dynamically before starting
       await this.initializeBotInfo(this.config);
@@ -189,8 +206,14 @@ export class SlackDispatcher {
   async stop(): Promise<void> {
     try {
       await this.app.stop();
-      await this.jobManager.cleanup();
       
+      if (this.queueProducer) {
+        await this.queueProducer.stop();
+      }
+      
+      if (this.jobManager) {
+        await this.jobManager.cleanup();
+      }
       
       logger.info("Slack dispatcher stopped");
     } catch (error) {
@@ -203,12 +226,14 @@ export class SlackDispatcher {
    */
   getStatus(): {
     isRunning: boolean;
+    mode: string;
     activeJobs: number;
     config: Partial<DispatcherConfig>;
   } {
     return {
       isRunning: true,
-      activeJobs: this.jobManager.getActiveJobCount(),
+      mode: this.isQueueMode ? 'queue' : 'legacy',
+      activeJobs: this.jobManager?.getActiveJobCount() || 0,
       config: {
         slack: {
           token: this.config.slack.token,
@@ -222,6 +247,7 @@ export class SlackDispatcher {
           memory: this.config.kubernetes.memory,
           timeoutSeconds: this.config.kubernetes.timeoutSeconds,
         },
+        queues: this.config.queues,
       },
     };
   }
@@ -245,13 +271,26 @@ export class SlackDispatcher {
       config.slack.botUserId = botUserId;
       config.slack.botId = botId;
       
-      // Now initialize event handlers with bot info
-      new SlackEventHandlers(
-        this.app,
-        this.jobManager,
-        this.repoManager,
-        config
-      );
+      // Initialize appropriate event handlers based on mode
+      if (this.isQueueMode && this.queueProducer) {
+        logger.info("Initializing queue-based event handlers");
+        new QueueSlackEventHandlers(
+          this.app,
+          this.queueProducer,
+          this.repoManager,
+          config
+        );
+      } else if (this.jobManager) {
+        logger.info("Initializing legacy event handlers");
+        new SlackEventHandlers(
+          this.app,
+          this.jobManager,
+          this.repoManager,
+          config
+        );
+      } else {
+        throw new Error("No valid managers initialized");
+      }
     } catch (error) {
       logger.error("Failed to get bot info:", error);
       throw new Error("Failed to initialize bot - could not get bot user ID");
@@ -371,6 +410,15 @@ async function main() {
       },
       sessionTimeoutMinutes: parseInt(process.env.SESSION_TIMEOUT_MINUTES || "5"),
       logLevel: process.env.LOG_LEVEL as any || LogLevel.INFO,
+      // Queue configuration (optional - enables queue mode if present)
+      queues: process.env.PGBOSS_CONNECTION_STRING ? {
+        connectionString: process.env.PGBOSS_CONNECTION_STRING,
+        directMessage: process.env.QUEUE_DIRECT_MESSAGE || "direct_message",
+        threadMessage: process.env.QUEUE_THREAD_MESSAGE || "thread_message",
+        retryLimit: parseInt(process.env.PGBOSS_RETRY_LIMIT || "3"),
+        retryDelay: parseInt(process.env.PGBOSS_RETRY_DELAY || "30"),
+        expireInHours: parseInt(process.env.PGBOSS_EXPIRE_HOURS || "24"),
+      } : undefined,
     };
 
     // Validate required configuration

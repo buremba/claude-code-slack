@@ -6,9 +6,9 @@ if (process.env.K8S_SKIP_TLS_VERIFY === "true") {
 }
 
 import { ClaudeWorker } from "./claude-worker";
+import { QueuePersistentClaudeWorker } from "./queue-persistent-worker";
 import type { WorkerConfig } from "./types";
 import logger from "./logger";
-import * as k8s from "@kubernetes/client-node";
 
 export class PersistentClaudeWorker {
   private worker: ClaudeWorker | null = null;
@@ -296,11 +296,24 @@ export class PersistentClaudeWorker {
 
 /**
  * Main entry point for persistent worker
+ * Supports both queue-based and legacy ConfigMap modes
  */
 async function main() {
   try {
-    const persistentWorker = new PersistentClaudeWorker();
-    await persistentWorker.start();
+    // Check if we should use queue mode or legacy mode
+    const isQueueMode = !!(process.env.DATABASE_HOST && process.env.BOT_ID);
+    
+    logger.info(`Starting persistent worker in ${isQueueMode ? 'QUEUE' : 'LEGACY'} mode`);
+    
+    if (isQueueMode) {
+      // Use new queue-based worker
+      const queueWorker = new QueuePersistentClaudeWorker();
+      await queueWorker.start();
+    } else {
+      // Use legacy ConfigMap-based worker
+      const legacyWorker = new PersistentClaudeWorker();
+      await legacyWorker.start();
+    }
     
     // Keep the process running
     await new Promise(() => {}); // Run forever

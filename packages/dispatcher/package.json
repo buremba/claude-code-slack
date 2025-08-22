@@ -20,7 +20,9 @@
     "@slack/web-api": "^7.6.0",
     "node-fetch": "^3.3.2",
     "winston": "^3.17.0",
-    "zod": "^3.24.4"
+    "zod": "^3.24.4",
+    "pg-boss": "^10.0.2",
+    "pg": "^8.11.3"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
