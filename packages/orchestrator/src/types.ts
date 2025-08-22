@@ -23,13 +23,6 @@ export interface OrchestratorConfig {
       limits: { cpu: string; memory: string };
     };
   };
-  keda: {
-    pollingInterval: number;
-    cooldownPeriod: number;
-    minReplicas: number;
-    maxReplicas: number;
-    jobThreshold: number;
-  };
   kubernetes: {
     namespace: string;
   };
@@ -63,11 +56,11 @@ export interface QueueJob {
 export interface UserQueueConfig {
   userId: string;
   queueName: string;
-  scaledObjectName: string;
   deploymentName: string;
   isActive: boolean;
   threadCount: number;
   lastActivity: Date;
+  currentReplicas: number;
 }
 
 export interface ThreadDeployment {
@@ -80,53 +73,8 @@ export interface ThreadDeployment {
   lastHeartbeat: Date;
 }
 
-// KEDA ScaledObject CRD types
-export interface KedaScaledObject {
-  apiVersion: 'keda.sh/v1alpha1';
-  kind: 'ScaledObject';
-  metadata: {
-    name: string;
-    namespace: string;
-    labels?: Record<string, string>;
-  };
-  spec: {
-    scaleTargetRef: {
-      name: string;
-    };
-    pollingInterval?: number;
-    cooldownPeriod?: number;
-    minReplicaCount?: number;
-    maxReplicaCount?: number;
-    triggers: Array<{
-      type: string;
-      metadata: Record<string, string>;
-    }>;
-    advanced?: {
-      horizontalPodAutoscalerConfig?: {
-        behavior?: {
-          scaleDown?: {
-            stabilizationWindowSeconds?: number;
-            policies?: Array<{
-              type: string;
-              value: number;
-              periodSeconds: number;
-            }>;
-          };
-          scaleUp?: {
-            stabilizationWindowSeconds?: number;
-            policies?: Array<{
-              type: string;
-              value: number;
-              periodSeconds: number;
-            }>;
-          };
-        };
-      };
-    };
-  };
-}
 
-export interface KedaDeployment {
+export interface SimpleDeployment {
   apiVersion: 'apps/v1';
   kind: 'Deployment';
   metadata: {
@@ -189,8 +137,7 @@ export interface KedaDeployment {
 export enum ErrorCode {
   DATABASE_CONNECTION_FAILED = 'DATABASE_CONNECTION_FAILED',
   KUBERNETES_API_ERROR = 'KUBERNETES_API_ERROR',
-  KEDA_SCALEDOBJECT_CREATE_FAILED = 'KEDA_SCALEDOBJECT_CREATE_FAILED',
-  KEDA_SCALEDOBJECT_DELETE_FAILED = 'KEDA_SCALEDOBJECT_DELETE_FAILED',
+  DEPLOYMENT_SCALE_FAILED = 'DEPLOYMENT_SCALE_FAILED',
   DEPLOYMENT_CREATE_FAILED = 'DEPLOYMENT_CREATE_FAILED',
   DEPLOYMENT_DELETE_FAILED = 'DEPLOYMENT_DELETE_FAILED',
   QUEUE_JOB_PROCESSING_FAILED = 'QUEUE_JOB_PROCESSING_FAILED',

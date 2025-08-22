@@ -449,7 +449,6 @@ export class DeploymentManager {
     return `peerbot-user-${userId.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()}`;
   }
 
-
   /**
    * Generate secure password for user database credentials
    */

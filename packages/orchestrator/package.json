@@ -1,7 +1,7 @@
 {
   "name": "@peerbot/orchestrator",
   "version": "1.0.0",
-  "description": "KEDA-based orchestrator for peerbot worker management",
+  "description": "Simple deployment orchestrator for peerbot worker management",
   "main": "src/index.ts",
   "scripts": {
     "build": "tsc",

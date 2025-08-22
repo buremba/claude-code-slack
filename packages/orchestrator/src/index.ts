@@ -4,26 +4,26 @@ import { config as dotenvConfig } from 'dotenv';
 import { join } from 'path';
 import { OrchestratorConfig, OrchestratorError, ErrorCode } from './types';
 import { DatabasePool } from './database-pool';
-import { KedaManager } from './keda-manager';
+import { DeploymentManager } from './deployment-manager';
 import { QueueConsumer } from './queue-consumer';
 
 export class PeerbotOrchestrator {
   private config: OrchestratorConfig;
   private dbPool: DatabasePool;
-  private kedaManager: KedaManager;
+  private deploymentManager: DeploymentManager;
   private queueConsumer: QueueConsumer;
   private isRunning = false;
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
     this.dbPool = new DatabasePool(config.database);
-    this.kedaManager = new KedaManager(config, this.dbPool);
-    this.queueConsumer = new QueueConsumer(config, this.kedaManager, this.dbPool);
+    this.deploymentManager = new DeploymentManager(config, this.dbPool);
+    this.queueConsumer = new QueueConsumer(config, this.deploymentManager, this.dbPool);
   }
 
   async start(): Promise<void> {
     try {
-      console.log('🚀 Starting Peerbot Orchestrator with KEDA integration...');
+      console.log('🚀 Starting Peerbot Orchestrator with simple deployment scaling...');
 
       // Test database connection
       await this.testDatabaseConnection();
@@ -42,8 +42,8 @@ export class PeerbotOrchestrator {
       this.isRunning = true;
       console.log('🎉 Peerbot Orchestrator is running!');
       console.log(`- Kubernetes namespace: ${this.config.kubernetes.namespace}`);
-      console.log(`- KEDA polling interval: ${this.config.keda.pollingInterval}s`);
-      console.log(`- Max replicas per user: ${this.config.keda.maxReplicas}`);
+      console.log('- Simple deployment scaling with 5-minute idle timeout');
+      console.log('- Deployments start with 1 replica and scale to 0 after idle');
 
     } catch (error) {
       console.error('❌ Failed to start orchestrator:', error);
@@ -179,11 +179,6 @@ export class PeerbotOrchestrator {
         kubernetes: {
           namespace: this.config.kubernetes.namespace
         },
-        keda: {
-          pollingInterval: this.config.keda.pollingInterval,
-          maxReplicas: this.config.keda.maxReplicas,
-          minReplicas: this.config.keda.minReplicas
-        },
         queues: {
           retryLimit: this.config.queues.retryLimit,
           expireInHours: this.config.queues.expireInHours
@@ -235,13 +230,6 @@ async function main() {
             memory: process.env.WORKER_MEMORY_LIMIT || '2Gi'
           }
         }
-      },
-      keda: {
-        pollingInterval: parseInt(process.env.KEDA_POLLING_INTERVAL || '15'),
-        cooldownPeriod: parseInt(process.env.KEDA_COOLDOWN_PERIOD || '120'),
-        minReplicas: parseInt(process.env.KEDA_MIN_REPLICAS || '0'),
-        maxReplicas: parseInt(process.env.KEDA_MAX_REPLICAS || '10'),
-        jobThreshold: parseInt(process.env.KEDA_JOB_THRESHOLD || '1')
       },
       kubernetes: {
         namespace: process.env.KUBERNETES_NAMESPACE || 'peerbot'

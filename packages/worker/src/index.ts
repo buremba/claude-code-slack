@@ -17,7 +17,7 @@ async function main() {
   const workerMode = process.env.WORKER_MODE || "legacy";
   
   if (workerMode === "queue") {
-    logger.info("🔄 Starting in queue mode (KEDA-based persistent worker)");
+    logger.info("🔄 Starting in queue mode (simple deployment-based persistent worker)");
     
     // Get user ID and optional target thread from environment
     const userId = process.env.USER_ID;

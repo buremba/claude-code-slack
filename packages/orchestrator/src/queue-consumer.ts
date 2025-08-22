@@ -6,19 +6,19 @@ import {
   OrchestratorError,
   ErrorCode 
 } from './types';
-import { KedaManager } from './keda-manager';
+import { DeploymentManager } from './deployment-manager';
 import { DatabasePool } from './database-pool';
 
 export class QueueConsumer {
   private pgBoss: PgBoss;
-  private kedaManager: KedaManager;
+  private deploymentManager: DeploymentManager;
   private dbPool: DatabasePool;
   private config: OrchestratorConfig;
   private isRunning = false;
 
-  constructor(config: OrchestratorConfig, kedaManager: KedaManager, dbPool: DatabasePool) {
+  constructor(config: OrchestratorConfig, deploymentManager: DeploymentManager, dbPool: DatabasePool) {
     this.config = config;
-    this.kedaManager = kedaManager;
+    this.deploymentManager = deploymentManager;
     this.dbPool = dbPool;
     
     this.pgBoss = new PgBoss({
@@ -78,12 +78,12 @@ export class QueueConsumer {
       // Update job status to active
       await this.dbPool.updateJobStatus(jobId, 'active');
 
-      // Ensure user queue exists (creates deployment + KEDA ScaledObject)
-      const userQueue = await this.kedaManager.ensureUserQueue(data.userId);
+      // Ensure user queue exists (creates deployment with simple scaling)
+      const userQueue = await this.deploymentManager.ensureUserQueue(data.userId);
       console.log(`Ensured user queue: ${userQueue.queueName}`);
 
       // Create thread deployment tracking
-      const threadDeployment = await this.kedaManager.createThreadDeployment(
+      const threadDeployment = await this.deploymentManager.createThreadDeployment(
         data.userId,
         data.threadId,
         data.agentSessionId
@@ -168,7 +168,12 @@ export class QueueConsumer {
       }
 
       try {
-        await this.kedaManager.cleanupInactiveThreads();
+        await this.deploymentManager.cleanupInactiveThreads();
+        
+        // Also check for users with pending jobs and scale up if needed
+        for (const [userId] of this.deploymentManager['activeUserQueues'].entries()) {
+          await this.deploymentManager.checkUserQueueAndScale(userId);
+        }
       } catch (error) {
         console.error('Cleanup task failed:', error);
       }
@@ -184,8 +189,8 @@ export class QueueConsumer {
       return {
         directMessage: stats,
         isRunning: this.isRunning,
-        activeUserQueues: Array.from(this.kedaManager['activeUserQueues'].keys()),
-        activeThreads: Array.from(this.kedaManager['activeThreadDeployments'].keys())
+        activeUserQueues: Array.from(this.deploymentManager['activeUserQueues'].keys()),
+        activeThreads: Array.from(this.deploymentManager['activeThreadDeployments'].keys())
       };
     } catch (error) {
       console.error('Failed to get queue stats:', error);
@@ -197,20 +202,20 @@ export class QueueConsumer {
    * Update thread heartbeat
    */
   updateThreadHeartbeat(threadId: string): void {
-    this.kedaManager.updateThreadHeartbeat(threadId);
+    this.deploymentManager.updateThreadHeartbeat(threadId);
   }
 
   /**
    * Get thread deployment info
    */
   getThreadDeployment(threadId: string) {
-    return this.kedaManager.getThreadDeployment(threadId);
+    return this.deploymentManager.getThreadDeployment(threadId);
   }
 
   /**
    * Get user queue info
    */
   getUserQueue(userId: string) {
-    return this.kedaManager.getUserQueue(userId);
+    return this.deploymentManager.getUserQueue(userId);
   }
 }

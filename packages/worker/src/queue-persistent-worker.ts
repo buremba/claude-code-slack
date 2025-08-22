@@ -21,7 +21,7 @@ export class QueuePersistentClaudeWorker {
   private userId: string;
   private targetThreadId?: string;
   private lastActivity: number = Date.now();
-  private timeoutMinutes: number = 30; // Longer timeout for queue-based workers
+  private timeoutMinutes: number = 30; // Worker can exit after inactivity, deployment stays up 5 more minutes
   private isInitialized = false;
 
   constructor(userId: string, targetThreadId?: string) {
@@ -163,12 +163,14 @@ export class QueuePersistentClaudeWorker {
       const now = Date.now();
       const timeSinceLastActivity = now - this.lastActivity;
       
-      // Don't timeout if we're currently processing or not fully initialized
+      // Allow the worker to exit naturally when not processing
+      // The orchestrator will handle scaling the deployment to 0 after 5 minutes
       if (timeSinceLastActivity > timeoutMs && 
           this.queueConsumer.isHealthy() && 
           this.isInitialized) {
-        logger.info(`Worker timed out after ${this.timeoutMinutes} minutes of inactivity`);
-        this.shutdown();
+        logger.info(`Worker finished after ${this.timeoutMinutes} minutes of inactivity`);
+        logger.info('Exiting - deployment will be scaled down by orchestrator after 5-minute grace period');
+        process.exit(0);
       }
     }, checkInterval);
     
@@ -240,11 +242,13 @@ async function main() {
     // Setup graceful shutdown
     process.on("SIGTERM", async () => {
       logger.info("Received SIGTERM, shutting down gracefully...");
+      await persistentWorker.stop();
       process.exit(0);
     });
 
     process.on("SIGINT", async () => {
       logger.info("Received SIGINT, shutting down gracefully...");
+      await persistentWorker.stop();
       process.exit(0);
     });
     

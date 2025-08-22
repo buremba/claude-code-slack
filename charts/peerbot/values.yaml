@@ -53,9 +53,9 @@ dispatcher:
     timeoutSeconds: 5
     failureThreshold: 3
 
-# Worker (KEDA-scaled deployment) configuration
+# Worker (simple-scaled deployment) configuration
 worker:
-  replicas: 1  # Initial replicas - KEDA will override this
+  replicas: 1  # Start with 1 replica, scale to 0 after 5 min idle
   logLevel: info
   
   image:
@@ -88,7 +88,7 @@ worker:
     size: 10Gi
     storageClass: ""  # Use default storage class
 
-# Orchestrator (KEDA-based worker management) configuration
+# Orchestrator (simple deployment management) configuration
 orchestrator:
   enabled: true
   replicas: 1
