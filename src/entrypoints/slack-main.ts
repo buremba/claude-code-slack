@@ -43,7 +43,7 @@ function parseArrayEnvVar(name: string): string[] | undefined {
   return value.split(",").map(item => item.trim()).filter(item => item.length > 0);
 }
 
-async function main() {
+export async function main() {
   try {
     console.log("🚀 Starting Claude Code Slack Application");
 

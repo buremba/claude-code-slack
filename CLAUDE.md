@@ -1,13 +1,13 @@
 # CLAUDE.md
 
 - You MUST only do what has been asked; nothing more, nothing less. You can check logs with k8s to understand the recent behavior the user is asking for.
-- Anytime you make changes in the code that should be tested, you MUST run ./test-bot.js "Relevant prompt" and make sure it works properly.
+- Anytime you make changes in the code that should be tested, you MUST run ./test-bot.js "Relevant prompt" and make sure it works properly. If the script fails, you MUST fix it.
 - If you create ephemeral files, you MUST delete them when you're done with them.
 - Always use Skaffold to build and run the Slack bot.
 - NEVER create files unless they're absolutely necessary for achieving your goal. Instead try to run the code on the fly for testing reasons.
 - NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User. If you need to remember something, add it to CLAUDE.md as a a single sentence.
-- Use `make dev` to start Skaffold in development mode with auto-rebuild, or see Makefile for other useful commands.
 - After making core changes (like removing environment variables), restart pods with: `kubectl rollout restart deployment/peerbot-dispatcher -n peerbot` to ensure latest code is running.
+- Keep `make dev` running continuously - If Skaffold stops detecting changes, restart the `make dev` session.
 
 ## Deployment Instructions
 

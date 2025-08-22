@@ -19,25 +19,36 @@ export class SlackIntegration {
   private lastUpdateTime = 0;
   private updateQueue: string[] = [];
   private isProcessingQueue = false;
-  private contextBlock: any = null; // Store the context header block
   private currentTodos: TodoItem[] = []; // Store the current todo list
+  private hasNotifiedSlackError = false; // Track if we've already notified about Slack errors
 
-  constructor(config: SlackConfig) {
+  constructor(config: SlackConfig & { responseChannel?: string; responseTs?: string }) {
     
     // Initialize with static token, will refresh if needed
     this.client = new WebClient(config.token);
     
-    // Get response location from environment
-    this.responseChannel = process.env.SLACK_RESPONSE_CHANNEL!;
-    this.responseTs = process.env.SLACK_RESPONSE_TS!;
+    // Debug logging to trace config values
+    logger.info(`[DEBUG] SlackIntegration config - responseChannel: "${config.responseChannel}", responseTs: "${config.responseTs}"`);
+    logger.info(`[DEBUG] Environment vars - INITIAL_SLACK_RESPONSE_CHANNEL: "${process.env.INITIAL_SLACK_RESPONSE_CHANNEL}", INITIAL_SLACK_RESPONSE_TS: "${process.env.INITIAL_SLACK_RESPONSE_TS}"`);
+    
+    // Get response location from config or environment - prioritize INITIAL_ vars
+    this.responseChannel = config.responseChannel || process.env.INITIAL_SLACK_RESPONSE_CHANNEL || process.env.SLACK_RESPONSE_CHANNEL!;
+    this.responseTs = config.responseTs || process.env.INITIAL_SLACK_RESPONSE_TS || process.env.SLACK_RESPONSE_TS!;
+    
+    // Validate required values - fail fast if missing or empty
+    if (!this.responseChannel || !this.responseTs || this.responseChannel.trim() === '' || this.responseTs.trim() === '') {
+      const error = new SlackError(
+        "initialization",
+        `Missing required Slack response location - channel: "${this.responseChannel}", ts: "${this.responseTs}"`,
+        new Error("Environment variables INITIAL_SLACK_RESPONSE_CHANNEL and INITIAL_SLACK_RESPONSE_TS are required and must not be empty")
+      );
+      logger.error(`SlackIntegration initialization failed: ${error.message}`);
+      throw error;
+    }
+    
+    logger.info(`SlackIntegration initialized successfully - channel: ${this.responseChannel}, ts: ${this.responseTs}`);
   }
 
-  /**
-   * Set the context block that should persist across updates
-   */
-  setContextBlock(block: any): void {
-    this.contextBlock = block;
-  }
 
   /**
    * Update progress message in Slack
@@ -64,6 +75,13 @@ export class SlackIntegration {
 
     } catch (error) {
       logger.error("Failed to update Slack progress:", error);
+      
+      // If this is the first Slack error, try curl fallback to notify the user
+      if (!this.hasNotifiedSlackError) {
+        this.hasNotifiedSlackError = true;
+        this.trySlackFallback("❌ **Slack Integration Error**\\n\\nUnable to update progress messages. This is likely a configuration issue with channel/timestamp values.");
+      }
+      
       // Don't throw - worker should continue even if Slack updates fail
     }
   }
@@ -148,20 +166,8 @@ export class SlackIntegration {
       logger.info(`performUpdate called with content length: ${content.length}`);
       logger.info(`Response channel: ${this.responseChannel}, TS: ${this.responseTs}`);
       
-      // Extract context info from context block if available
-      let contextInfo: string | undefined;
-      if (this.contextBlock && this.contextBlock.elements) {
-        // Context block is a "context" type with elements array
-        contextInfo = this.contextBlock.elements
-          .map((element: any) => element.text || '')
-          .join(' ');
-      } else if (this.contextBlock && this.contextBlock.text && this.contextBlock.text.text) {
-        // Fallback for other block types
-        contextInfo = this.contextBlock.text.text;
-      }
-      
-      // Convert markdown to Slack format with blocks support and context info
-      const slackMessage = markdownToSlackWithBlocks(content, contextInfo);
+      // Convert markdown to Slack format with blocks support
+      const slackMessage = markdownToSlackWithBlocks(content);
       
       // Build blocks array (no longer adding context block at the top)
       let blocks: any[] = [];
@@ -224,20 +230,8 @@ export class SlackIntegration {
    */
   async postMessage(content: string, threadTs?: string): Promise<void> {
     try {
-      // Extract context info from context block if available
-      let contextInfo: string | undefined;
-      if (this.contextBlock && this.contextBlock.elements) {
-        // Context block is a "context" type with elements array
-        contextInfo = this.contextBlock.elements
-          .map((element: any) => element.text || '')
-          .join(' ');
-      } else if (this.contextBlock && this.contextBlock.text && this.contextBlock.text.text) {
-        // Fallback for other block types
-        contextInfo = this.contextBlock.text.text;
-      }
-      
       // Convert markdown to Slack format with blocks support
-      const slackMessage = markdownToSlackWithBlocks(content, contextInfo);
+      const slackMessage = markdownToSlackWithBlocks(content);
       
       await this.client.chat.postMessage({
         channel: this.responseChannel,
@@ -449,6 +443,38 @@ export class SlackIntegration {
     });
 
     return `📝 **Task Progress**\n\n${todoLines.join('\n')}`;
+  }
+
+  /**
+   * Try to post error message using curl when regular Slack integration fails
+   */
+  private trySlackFallback(errorMessage: string): void {
+    try {
+      const slackToken = process.env.SLACK_BOT_TOKEN;
+      const channel = process.env.INITIAL_SLACK_RESPONSE_CHANNEL;
+      const ts = process.env.INITIAL_SLACK_RESPONSE_TS;
+      
+      if (slackToken && channel && ts) {
+        // Use shell command with curl to post error message
+        const { execSync } = require("node:child_process");
+        const curlCommand = `curl -X POST https://slack.com/api/chat.update \\
+          -H "Authorization: Bearer ${slackToken}" \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "channel": "${channel}",
+            "ts": "${ts}",
+            "text": "${errorMessage}"
+          }' 2>/dev/null`;
+        
+        execSync(curlCommand);
+        logger.info("Posted error message to Slack via curl fallback");
+      } else {
+        logger.error("Cannot use Slack fallback - missing environment variables");
+        logger.error(`Token: ${!!slackToken}, Channel: ${channel}, TS: ${ts}`);
+      }
+    } catch (curlError) {
+      logger.error("Slack curl fallback also failed:", curlError);
+    }
   }
 
   /**

@@ -1,6 +1,6 @@
 {
   "display_information": {
-      "name": "PeerCloud",
+      "name": "Peerbot",
       "description": "Hire AI peers to work with you, using your environments",
       "background_color": "#4a154b",
       "long_description": "This bot integrates Claude Code SDK with Slack to provide AI-powered coding assistance directly in your workspace. You can generate apps/AI peers that will appear as new handles."
@@ -12,7 +12,7 @@
           "messages_tab_read_only_enabled": false
       },
       "bot_user": {
-          "display_name": "PeerCloud",
+          "display_name": "Peerbot",
           "always_online": true
       },
       "shortcuts": [
@@ -22,7 +22,28 @@
               "callback_id": "create_project",
               "description": "Creates a project"
           }
-      ]
+      ],
+      "assistant_view": {
+          "assistant_description": "It can generate Claude Code session working on public Github data",
+          "suggested_prompts": [
+              {
+                  "title": "Setup peers",
+                  "message": "List all the subagents in Claude and explain when they're triggered. Confirm with the user the changes and apply them to projects ./claude/agents/ directory and CLAUDE.md file."
+              },
+              {
+                  "title": "Create a project",
+                  "message": "Create a new project. If there is no subagent, suggest user run setup peers first. Ask user the type of the project and gather information to create a new project."
+              },
+              {
+                  "title": "Start working on a new feature/bug",
+                  "message": "List me projects and let me tell you what I want to develop on which project"
+              },
+              {
+                  "title": "Be creative ✨",
+                  "message": "Look at the existing projects; if there are none, let me create a new project. If there is only one project, switch to that project and and if it's a web server, run it and expose it with Cloudflare anonymous tunnel proxy. "
+              }
+          ]
+      }
   },
   "oauth_config": {
       "redirect_urls": [
@@ -51,7 +72,6 @@
   },
   "settings": {
       "event_subscriptions": {
-          "request_url": "https://slack.peerbot.ai/slack/events",
           "bot_events": [
               "app_home_opened",
               "app_mention",
@@ -62,12 +82,10 @@
           ]
       },
       "interactivity": {
-          "is_enabled": true,
-          "request_url": "https://slack.peerbot.ai/slack/interactive",
-          "message_menu_options_url": "https://slack.peerbot.ai/slack/interactive/options-load"
+          "is_enabled": true
       },
       "org_deploy_enabled": false,
-      "socket_mode_enabled": false,
+      "socket_mode_enabled": true,
       "token_rotation_enabled": false
   }
 }

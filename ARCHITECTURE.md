@@ -200,54 +200,66 @@ graph LR
         SK[slack-C123456-U789012-1729456789.123456]
     end
     
-    subgraph KubernetesJob[Kubernetes Job]
-        J[claude-worker-slack-c123456-u789012-1729456789-123456-a1b2]
+    subgraph KubernetesDeployment[Kubernetes Deployment]
+        D[claude-worker-slack-c123456-u789012-1729456789-123456]
+    end
+    
+    subgraph ReplicaSet[ReplicaSet]
+        RS[claude-worker-slack-c123456-u789012-1729456789-123456-xxxxx]
     end
     
     subgraph Pod[Pod]
-        P[claude-worker-slack-c123456-u789012-1729456789-123456-a1b2-xxxxx]
+        P[claude-worker-slack-c123456-u789012-1729456789-123456-xxxxx-yyyyy]
     end
     
     T --> SK
-    SK --> J
-    J --> P
+    SK --> D
+    D --> RS
+    RS --> P
 ```
 
-### Kubernetes Resource Labels & Annotations
+## Kubernetes Resource Naming
 
-```yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: claude-worker-slack-c123456-u789012-1729456789-123456-a1b2
-  namespace: peerbot
-  labels:
-    app: claude-worker
-    session-key: slack-c123456-u789012-1729456789-123456
-    user-id: U789012
-    component: worker
-  annotations:
-    claude.ai/session-key: slack-C123456-U789012-1729456789.123456
-    claude.ai/user-id: U789012
-    claude.ai/username: user-john
-    claude.ai/created-at: 2024-10-20T10:30:00Z
-spec:
-  template:
-    spec:
-      containers:
-      - name: claude-worker
-        image: claude-worker:latest
-        resources:
-          requests:
-            cpu: 500m
-            memory: 1Gi
-          limits:
-            cpu: 1500m
-            memory: 3Gi
-        volumeMounts:
-        - name: workspace
-          mountPath: /workspace
-```
+### 1. Session Key Format
+**Pattern**: `slack-{CHANNEL_ID}-{USER_ID}-{THREAD_TIMESTAMP}`  
+**Example**: `slack-C123456-U789012-1729456789.123456`
+
+### 2. Resource Hierarchy
+
+| Level | Resource Type | Name Pattern | Example |
+|-------|---------------|-------------|----------|
+| 1 | **Deployment** | `claude-worker-{sanitized-session-key}` | `claude-worker-slack-c123456-u789012-1729456789-123456` |
+| 2 | **ReplicaSet** | `{deployment-name}-{k8s-hash}` | `claude-worker-...-123456-7b8c9d` |
+| 3 | **Pod** | `{replicaset-name}-{random}` | `claude-worker-...-7b8c9d-abc12` |
+| 4 | **ConfigMap** | `{deployment-name}-message-msg-{timestamp}` | `claude-worker-...-123456-message-msg-1729456790123` |
+
+### 3. Name Sanitization Rules
+
+| Original Format | Sanitized Format | Purpose |
+|----------------|------------------|---------|
+| `slack-C123456-U789012-1729456789.123456` | `slack-c123456-u789012-1729456789-123456` | Kubernetes DNS-1123 compliance |
+| Dots (`.`) → Dashes (`-`) | Lowercase conversion | Label compatibility |
+
+### 4. Labels & Annotations Strategy
+
+| Type | Key | Value Format | Example |
+|------|-----|-------------|---------|
+| **Label** | `app` | Fixed value | `claude-worker` |
+| **Label** | `session-key` | Sanitized | `slack-c123456-u789012-1729456789-123456` |
+| **Label** | `user-id` | Original | `U789012` |
+| **Annotation** | `claude.ai/session-key` | Original | `slack-C123456-U789012-1729456789.123456` |
+| **Annotation** | `claude.ai/username` | Original | `user-john` |
+
+### 5. Storage Structure
+
+| Path | Purpose | Shared/Isolated |
+|------|---------|-----------------|
+| `/workspace/` | PVC mount point | Shared |
+| `/workspace/user-{username}/` | User workspace | Isolated |
+| `/workspace/user-{username}/.claude/` | Session data | Isolated |
+| `/workspace/user-{username}/.git/` | Repository | Isolated |
+
+**PVC Name**: `peerbot-worker-pvc` (10GB, shared across all workers)
 
 ## Session Management & Persistence
 
@@ -360,7 +372,7 @@ sequenceDiagram
 1. **Repository Caching**: 5-minute TTL for repository metadata
 2. **Session Persistence**: Avoid re-cloning for same user
 3. **Spot Instances**: Workers prefer spot nodes for cost savings
-4. **TTL Cleanup**: Jobs auto-delete after 5 minutes
+4. **Manual Cleanup**: Stale deployments cleaned up via script (automatic cleanup planned)
 
 ## Security Considerations
 
@@ -420,6 +432,23 @@ graph LR
 - 5-minute hard timeout per worker
 - Grace period for cleanup operations
 - Slack notification on timeout
+
+## Deployment Cleanup
+
+### Stale Deployment Issue
+Worker deployments persist after sessions end, leading to accumulation of inactive deployments in the cluster. Unlike the previous Job-based system with TTL cleanup, Deployments require manual cleanup.
+
+### Current Cleanup Approach
+- **Manual cleanup script**: `./scripts/cleanup-stale-deployments.sh`
+- **Identification criteria**: Deployments with `readyReplicas: 0` and no recent activity
+- **Safety**: Persistent volume data is preserved for session resume capability
+- **Future**: Automatic cleanup will be implemented in the dispatcher
+
+### Cleanup Strategy
+1. **Grace Period**: 15 minutes after last activity (accommodates worker restarts)
+2. **Activity Tracking**: Monitor ConfigMap creation times as proxy for last activity
+3. **Safe Deletion**: Only delete deployments, preserve PVC for conversation continuity
+4. **Operational**: Run cleanup script periodically via cron or manual execution
 
 ## Future Enhancements
 

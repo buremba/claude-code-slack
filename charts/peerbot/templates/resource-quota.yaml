@@ -32,6 +32,7 @@ spec:
     count/services.loadbalancers: {{ .Values.resourceQuota.counts.loadbalancers | default "1" }}
     count/services.nodeports: {{ .Values.resourceQuota.counts.nodeports | default "0" }}
 
+{{- if and .Values.resourceQuota.enabled (ne .Values.workerQuota.enabled false) }}
 ---
 # Separate quota for worker jobs to prevent resource exhaustion
 apiVersion: v1
@@ -58,5 +59,6 @@ spec:
     # Limit concurrent worker jobs
     count/pods: {{ .Values.workerQuota.counts.pods | default "10" }}
     count/jobs.batch: {{ .Values.workerQuota.counts.jobs | default "8" }}
+{{- end }}
 
 {{- end }}

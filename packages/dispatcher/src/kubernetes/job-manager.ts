@@ -4,8 +4,7 @@ import * as k8s from "@kubernetes/client-node";
 import logger from "../logger";
 import type { 
   KubernetesConfig,
-  WorkerJobRequest,
-  JobTemplateData
+  WorkerJobRequest
 } from "../types";
 import { KubernetesError } from "../types";
 
@@ -17,7 +16,8 @@ interface RateLimitEntry {
 export class KubernetesJobManager {
   private k8sApi: k8s.BatchV1Api;
   private k8sCoreApi: k8s.CoreV1Api;
-  private activeJobs = new Map<string, string>(); // sessionKey -> jobName
+  private k8sAppsApi: k8s.AppsV1Api;
+  private activeJobs = new Map<string, string>(); // sessionKey -> deploymentName
   private rateLimitMap = new Map<string, RateLimitEntry>(); // userId -> rate limit data
   private config: KubernetesConfig;
   
@@ -76,6 +76,7 @@ export class KubernetesJobManager {
     
     this.k8sApi = kc.makeApiClient(k8s.BatchV1Api);
     this.k8sCoreApi = kc.makeApiClient(k8s.CoreV1Api);
+    this.k8sAppsApi = kc.makeApiClient(k8s.AppsV1Api);
     
     // Start cleanup timer for rate limit entries
     this.startRateLimitCleanup();
@@ -172,44 +173,44 @@ export class KubernetesJobManager {
   }
 
   /**
-   * Find an existing job for a session by checking Kubernetes labels
+   * Find an existing worker deployment for a session by checking Kubernetes labels
    */
-  private async findExistingJobForSession(sessionKey: string): Promise<string | null> {
+  private async findExistingWorkerForSession(sessionKey: string): Promise<string | null> {
     try {
       // Create a safe label value from the session key
       const labelValue = sessionKey.replace(/[^a-z0-9]/gi, "-").toLowerCase();
       
-      // List jobs with the session-key label
-      const jobsResponse = await this.k8sApi.listNamespacedJob({
+      // List deployments with the session-key label
+      const deploymentsResponse = await this.k8sAppsApi.listNamespacedDeployment({
         namespace: this.config.namespace,
         labelSelector: `session-key=${labelValue}`
       });
       
-      // Find active jobs (not completed or failed)
-      for (const job of jobsResponse.items) {
-        const jobName = job.metadata?.name;
-        const status = job.status;
+      // Find active deployments
+      for (const deployment of deploymentsResponse.items) {
+        const deploymentName = deployment.metadata?.name;
+        const status = deployment.status;
         
-        // Check if job is still active (not completed or failed)
-        if (jobName && !status?.succeeded && !status?.failed) {
+        // Check if deployment is active and ready
+        if (deploymentName && status?.readyReplicas && status?.readyReplicas > 0) {
           // Also check the annotation to verify it's the exact session
-          const annotations = job.metadata?.annotations || {};
+          const annotations = deployment.metadata?.annotations || {};
           if (annotations["claude.ai/session-key"] === sessionKey) {
-            logger.info(`Found existing active job ${jobName} for session ${sessionKey}`);
-            return jobName;
+            logger.info(`Found existing active worker ${deploymentName} for session ${sessionKey}`);
+            return deploymentName;
           }
         }
       }
       
       return null;
     } catch (error) {
-      logger.error(`Error checking for existing job for session ${sessionKey}:`, error);
+      logger.error(`Error checking for existing worker for session ${sessionKey}:`, error);
       return null;
     }
   }
 
   /**
-   * Create a worker job for the user request
+   * Create or get a persistent worker for the user request
    */
   async createWorkerJob(request: WorkerJobRequest): Promise<string> {
     // Check rate limits first
@@ -221,102 +222,125 @@ export class KubernetesJobManager {
       );
     }
 
-    const jobName = this.generateJobName(request.sessionKey);
+    const workerName = this.generateWorkerName(request.sessionKey);
     
     try {
-      // Check if job already exists in memory
-      const existingJobName = this.activeJobs.get(request.sessionKey);
-      if (existingJobName) {
-        logger.info(`Job already exists for session ${request.sessionKey}: ${existingJobName}`);
-        return existingJobName;
+      // Check if worker already exists in memory
+      const existingWorkerName = this.activeJobs.get(request.sessionKey);
+      if (existingWorkerName) {
+        logger.info(`Worker already exists for session ${request.sessionKey}: ${existingWorkerName}`);
+        // Send message to existing worker via ConfigMap
+        await this.sendMessageToWorker(existingWorkerName, request);
+        return existingWorkerName;
       }
 
-      // Check if a job already exists in Kubernetes for this session
+      // Check if a worker already exists in Kubernetes for this session
       // This handles the case where the dispatcher was restarted
-      const existingJob = await this.findExistingJobForSession(request.sessionKey);
-      if (existingJob) {
-        logger.info(`Found existing Kubernetes job for session ${request.sessionKey}: ${existingJob}`);
+      const existingWorker = await this.findExistingWorkerForSession(request.sessionKey);
+      if (existingWorker) {
+        logger.info(`Found existing Kubernetes worker for session ${request.sessionKey}: ${existingWorker}`);
         // Track it in memory for this instance
-        this.activeJobs.set(request.sessionKey, existingJob);
-        return existingJob;
+        this.activeJobs.set(request.sessionKey, existingWorker);
+        // Send message to existing worker via ConfigMap
+        await this.sendMessageToWorker(existingWorker, request);
+        return existingWorker;
       }
 
-      // Create job manifest
-      const jobManifest = this.createJobManifest(jobName, request);
+      // Create worker deployment manifest
+      const deploymentManifest = this.createWorkerDeploymentManifest(workerName, request);
 
-      // Create the job
-      await this.k8sApi.createNamespacedJob({
+      // Create the deployment
+      await this.k8sAppsApi.createNamespacedDeployment({
         namespace: this.config.namespace,
-        body: jobManifest
+        body: deploymentManifest
       });
       
-      // Track the job
-      this.activeJobs.set(request.sessionKey, jobName);
+      // Track the worker
+      this.activeJobs.set(request.sessionKey, workerName);
       
-      logger.info(`Created Kubernetes job: ${jobName} for session ${request.sessionKey}`);
+      logger.info(`Created Kubernetes worker deployment: ${workerName} for session ${request.sessionKey}`);
       
-      // Start monitoring the job
-      this.monitorJob(jobName, request.sessionKey);
+      // Start monitoring the worker
+      this.monitorWorker(workerName, request.sessionKey);
       
-      return jobName;
+      return workerName;
 
     } catch (error) {
       throw new KubernetesError(
         "createWorkerJob",
-        `Failed to create job for session ${request.sessionKey}`,
+        `Failed to create worker for session ${request.sessionKey}`,
         error as Error
       );
     }
   }
 
   /**
-   * Generate unique job name
+   * Generate worker name based on session key (thread timestamp)
    */
-  private generateJobName(sessionKey: string): string {
-    // Use the session key (which is now the thread timestamp) directly
+  private generateWorkerName(sessionKey: string): string {
+    // Use the session key (thread timestamp) directly for persistent worker
     // Replace dots with dashes for Kubernetes naming conventions
     const safeSessionKey = sessionKey.replace(/\./g, "-").toLowerCase();
     
-    // For Kubernetes job names, we need to ensure uniqueness even if the same thread is processed multiple times
-    // Add a short timestamp suffix to handle multiple executions in the same thread
-    const timestamp = Date.now().toString(36).slice(-4);
-    
-    return `claude-worker-${safeSessionKey}-${timestamp}`;
+    // No timestamp suffix needed since we want one worker per thread
+    return `claude-worker-${safeSessionKey}`;
   }
 
   /**
-   * Create Kubernetes Job manifest
+   * Send message to existing worker via ConfigMap
    */
-  private createJobManifest(jobName: string, request: WorkerJobRequest): k8s.V1Job {
-    const templateData: JobTemplateData = {
-      jobName,
-      namespace: this.config.namespace,
-      workerImage: this.config.workerImage,
-      cpu: this.config.cpu,
-      memory: this.config.memory,
-      timeoutSeconds: this.config.timeoutSeconds,
-      sessionKey: request.sessionKey,
-      userId: request.userId,
-      username: request.username,
-      channelId: request.channelId,
-      threadTs: request.threadTs || "",
-      repositoryUrl: request.repositoryUrl,
-      userPrompt: Buffer.from(request.userPrompt).toString("base64"), // Base64 encode for safety
-      slackResponseChannel: request.slackResponseChannel,
-      slackResponseTs: request.slackResponseTs,
-      originalMessageTs: request.originalMessageTs,
-      claudeOptions: JSON.stringify(request.claudeOptions),
-      resumeSessionId: request.resumeSessionId,
-      // These will be injected from secrets/configmaps
-      slackToken: "", 
-      githubToken: "",
-    };
+  private async sendMessageToWorker(workerName: string, request: WorkerJobRequest): Promise<void> {
+    try {
+      const messageId = `msg-${Date.now()}`;
+      const configMapName = `${workerName}-message-${messageId}`;
+      
+      const configMap: k8s.V1ConfigMap = {
+        apiVersion: "v1",
+        kind: "ConfigMap",
+        metadata: {
+          name: configMapName,
+          namespace: this.config.namespace,
+          labels: {
+            "claude.ai/worker": workerName,
+            "claude.ai/message-type": "user-request"
+          },
+          annotations: {
+            "claude.ai/session-key": request.sessionKey,
+            "claude.ai/message-id": messageId,
+            "claude.ai/created-at": new Date().toISOString(),
+          }
+        },
+        data: {
+          userPrompt: request.userPrompt,
+          slackResponseChannel: request.slackResponseChannel,
+          slackResponseTs: request.slackResponseTs,
+          originalMessageTs: request.originalMessageTs || "",
+          claudeOptions: JSON.stringify(request.claudeOptions),
+          resumeSessionId: request.resumeSessionId || "",
+        }
+      };
 
+      await this.k8sCoreApi.createNamespacedConfigMap({
+        namespace: this.config.namespace,
+        body: configMap
+      });
+
+      logger.info(`Sent message ${messageId} to worker ${workerName} via ConfigMap ${configMapName}`);
+    } catch (error) {
+      logger.error(`Failed to send message to worker ${workerName}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create Kubernetes Deployment manifest for persistent worker
+   */
+  private createWorkerDeploymentManifest(workerName: string, request: WorkerJobRequest): k8s.V1Deployment {
     return {
-      apiVersion: "batch/v1",
-      kind: "Job",
+      apiVersion: "apps/v1",
+      kind: "Deployment",
       metadata: {
-        name: jobName,
+        name: workerName,
         namespace: this.config.namespace,
         labels: {
           app: "claude-worker",
@@ -332,8 +356,13 @@ export class KubernetesJobManager {
         },
       },
       spec: {
-        activeDeadlineSeconds: this.config.timeoutSeconds,
-        ttlSecondsAfterFinished: 300, // Clean up job 5 minutes after completion
+        replicas: 1,
+        selector: {
+          matchLabels: {
+            app: "claude-worker",
+            "session-key": request.sessionKey.replace(/[^a-z0-9]/gi, "-").toLowerCase(),
+          },
+        },
         template: {
           metadata: {
             labels: {
@@ -343,7 +372,9 @@ export class KubernetesJobManager {
             },
           },
           spec: {
-            restartPolicy: "Never",
+            restartPolicy: "Always",
+            priorityClassName: "worker-priority",
+            serviceAccountName: "claude-worker",
             // Prefer spot instances but allow running on any node
             tolerations: [
               {
@@ -358,6 +389,7 @@ export class KubernetesJobManager {
                 name: "claude-worker",
                 image: this.config.workerImage,
                 imagePullPolicy: "Always",
+                command: ["bun", "run", "dist/persistent-worker.js"],
                 resources: {
                   requests: {
                     cpu: this.config.cpu,
@@ -371,51 +403,60 @@ export class KubernetesJobManager {
                 env: [
                   {
                     name: "SESSION_KEY",
-                    value: templateData.sessionKey,
+                    value: request.sessionKey,
                   },
                   {
                     name: "USER_ID",
-                    value: templateData.userId,
+                    value: request.userId,
                   },
                   {
                     name: "USERNAME",
-                    value: templateData.username,
+                    value: request.username,
                   },
                   {
                     name: "CHANNEL_ID",
-                    value: templateData.channelId,
+                    value: request.channelId,
                   },
                   {
                     name: "THREAD_TS",
-                    value: templateData.threadTs,
+                    value: request.threadTs || "",
                   },
                   {
                     name: "REPOSITORY_URL",
-                    value: templateData.repositoryUrl,
+                    value: request.repositoryUrl,
                   },
                   {
-                    name: "USER_PROMPT",
-                    value: templateData.userPrompt,
+                    name: "WORKER_NAME",
+                    value: workerName,
                   },
                   {
-                    name: "SLACK_RESPONSE_CHANNEL",
-                    value: templateData.slackResponseChannel,
+                    name: "SESSION_TIMEOUT_MINUTES",
+                    value: "5", // 5 minute timeout for inactive sessions
+                  },
+                  // Initial message for the first request
+                  {
+                    name: "INITIAL_USER_PROMPT",
+                    value: Buffer.from(request.userPrompt).toString("base64"),
                   },
                   {
-                    name: "SLACK_RESPONSE_TS",
-                    value: templateData.slackResponseTs,
+                    name: "INITIAL_SLACK_RESPONSE_CHANNEL",
+                    value: request.slackResponseChannel,
                   },
                   {
-                    name: "ORIGINAL_MESSAGE_TS",
-                    value: templateData.originalMessageTs || "",
+                    name: "INITIAL_SLACK_RESPONSE_TS",
+                    value: request.slackResponseTs,
                   },
                   {
-                    name: "CLAUDE_OPTIONS",
-                    value: templateData.claudeOptions,
+                    name: "INITIAL_ORIGINAL_MESSAGE_TS",
+                    value: request.originalMessageTs || "",
                   },
                   {
-                    name: "RESUME_SESSION_ID",
-                    value: templateData.resumeSessionId || "",
+                    name: "INITIAL_CLAUDE_OPTIONS",
+                    value: JSON.stringify(request.claudeOptions),
+                  },
+                  {
+                    name: "INITIAL_RESUME_SESSION_ID",
+                    value: request.resumeSessionId || "",
                   },
                   // Worker needs Slack token to send progress updates
                   {
@@ -449,6 +490,10 @@ export class KubernetesJobManager {
                     name: "CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS",
                     value: "1",
                   },
+                  {
+                    name: "K8S_SKIP_TLS_VERIFY",
+                    value: "true",
+                  },
                 ],
                 volumeMounts: [
                   {
@@ -457,7 +502,6 @@ export class KubernetesJobManager {
                   },
                 ],
                 workingDir: "/app/packages/worker",
-                command: ["bun", "run", "dist/index.js"],
               },
             ],
             volumes: [
@@ -468,17 +512,17 @@ export class KubernetesJobManager {
                 },
               },
             ],
-            serviceAccountName: "claude-worker",
           },
         },
       },
     };
   }
+
   
   /**
-   * Monitor job status
+   * Monitor worker deployment status
    */
-  private async monitorJob(jobName: string, sessionKey: string): Promise<void> {
+  private async monitorWorker(workerName: string, sessionKey: string): Promise<void> {
     const maxAttempts = 60; // Monitor for up to 10 minutes (10s intervals)
     let attempts = 0;
 
@@ -486,30 +530,34 @@ export class KubernetesJobManager {
       try {
         attempts++;
         
-        const jobResponse = await this.k8sApi.readNamespacedJob({
-          name: jobName,
+        const deploymentResponse = await this.k8sAppsApi.readNamespacedDeployment({
+          name: workerName,
           namespace: this.config.namespace
         });
-        const job = jobResponse;
+        const deployment = deploymentResponse;
         
-        const status = job.status;
+        const status = deployment.status;
         
-        if (status?.succeeded) {
-          logger.info(`Job ${jobName} completed successfully`);
-          this.activeJobs.delete(sessionKey);
-          return;
+        if (status?.readyReplicas && status.readyReplicas > 0) {
+          logger.info(`Worker ${workerName} is ready and running`);
+          return; // Worker is ready, stop monitoring initial startup
         }
         
-        if (status?.failed) {
-          logger.info(`Job ${jobName} failed`);
-          this.activeJobs.delete(sessionKey);
-          return;
+        // Check if deployment failed
+        if (status?.conditions) {
+          const failedCondition = status.conditions.find(c => 
+            c.type === "Progressing" && c.status === "False"
+          );
+          if (failedCondition) {
+            logger.error(`Worker ${workerName} failed to deploy: ${failedCondition.reason} - ${failedCondition.message}`);
+            this.activeJobs.delete(sessionKey);
+            return;
+          }
         }
         
-        // Check if job timed out
+        // Check if max attempts reached
         if (attempts >= maxAttempts) {
-          logger.info(`Job ${jobName} monitoring timed out`);
-          this.activeJobs.delete(sessionKey);
+          logger.warn(`Worker ${workerName} monitoring timed out after ${maxAttempts} attempts`);
           return;
         }
         
@@ -517,14 +565,17 @@ export class KubernetesJobManager {
         setTimeout(checkStatus, 10000); // Check every 10 seconds
         
       } catch (error) {
-        logger.error(`Error monitoring job ${jobName}:`, error);
-        this.activeJobs.delete(sessionKey);
+        logger.error(`Error monitoring worker ${workerName}:`, error);
+        if (attempts < maxAttempts) {
+          setTimeout(checkStatus, 10000);
+        }
       }
     };
 
     // Start monitoring
     setTimeout(checkStatus, 5000); // Initial delay of 5 seconds
   }
+
 
   /**
    * Delete a job

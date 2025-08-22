@@ -92,30 +92,6 @@ export interface UserRepository {
   lastUsed: number;
 }
 
-// Kubernetes Job template data
-export interface JobTemplateData {
-  jobName: string;
-  namespace: string;
-  workerImage: string;
-  cpu: string;
-  memory: string;
-  timeoutSeconds: number;
-  sessionKey: string;
-  userId: string;
-  username: string;
-  channelId: string;
-  threadTs?: string;
-  repositoryUrl: string;
-  userPrompt: string;
-  slackResponseChannel: string;
-  slackResponseTs: string;
-  originalMessageTs?: string; // Original user message timestamp for reactions
-  claudeOptions: string; // JSON string
-  resumeSessionId?: string; // Claude session ID to resume from
-  // Environment variables from config
-  slackToken: string;
-  githubToken: string;
-}
 
 // Error types
 export class DispatcherError extends Error {

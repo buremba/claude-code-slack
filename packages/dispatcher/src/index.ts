@@ -138,7 +138,7 @@ export class SlackDispatcher {
         // In socket mode, add connection event handlers first
         const socketModeClient = (this.app as any).receiver?.client;
         if (socketModeClient) {
-          socketModeClient.on('slack_event', (event: any, body: any) => {
+          socketModeClient.on('slack_event', (event: any, _body: any) => {
             logger.debug('Socket Mode event received:', event.type);
           });
           

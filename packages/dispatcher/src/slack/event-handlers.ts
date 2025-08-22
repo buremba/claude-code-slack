@@ -1052,7 +1052,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
    */
   private async handleSlashCommandSelection(
     userId: string,
-    githubUsername: string,
+    _githubUsername: string,
     channelId: string,
     messageTs: string,
     client: any,

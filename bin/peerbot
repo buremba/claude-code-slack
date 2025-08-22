@@ -1,0 +1,30 @@
+#!/usr/bin/env bun
+
+import { main as slackSetup } from '../packages/setup/slack.ts';
+
+const command = process.argv[2];
+const subCommand = process.argv[3];
+
+async function main() {
+  if (command === 'setup' && subCommand === 'slack') {
+    await slackSetup();
+  } else if (command === 'run' && subCommand === 'slack') {
+    console.log('🚀 Starting Slack bot...');
+    // Import and run the slack main
+    const { main: runSlackMain } = await import('../src/entrypoints/slack-main.ts');
+    await runSlackMain();
+  } else {
+    console.log('PeerBot CLI');
+    console.log('');
+    console.log('Usage:');
+    console.log('  peerbot setup slack    Setup Slack integration');
+    console.log('  peerbot run slack      Run Slack bot');
+    console.log('');
+    console.log('Examples:');
+    console.log('  peerbot setup slack    # Interactive Slack app setup');
+    console.log('  peerbot run slack      # Start the Slack bot');
+    process.exit(1);
+  }
+}
+
+main().catch(console.error);

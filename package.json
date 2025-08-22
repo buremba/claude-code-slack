@@ -2,6 +2,9 @@
   "name": "@anthropic-ai/claude-code-slack",
   "version": "1.0.0",
   "private": true,
+  "bin": {
+    "peerbot": "./bin/peerbot"
+  },
   "workspaces": [
     "packages/core-runner",
     "packages/dispatcher",

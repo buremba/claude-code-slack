@@ -45,10 +45,12 @@ update: compile
 dev:
 	@echo "🚀 Starting Skaffold development mode..."
 	@echo "   This will:"
+	@echo "   - Sync .env values to Helm values"
 	@echo "   - Watch for file changes"
 	@echo "   - Automatically rebuild and redeploy"
 	@echo "   - Stream logs to console"
 	@echo ""
+	@./bin/sync-env-to-values.sh
 	@skaffold dev --port-forward $(if $(filter --debug,$(MAKECMDGOALS)),--verbosity=debug)
 
 # Catch-all target to prevent errors when passing arguments

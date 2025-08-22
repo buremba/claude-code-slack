@@ -110,7 +110,95 @@ async function checkForReaction(channel, timestamp, reactionName, timeout = 3000
   return false;
 }
 
-async function runTest(prompt) {
+async function runMultiMessageTest(messages, timeout = 30000) {
+  console.log('🧪 Peerbot Multi-Message Test');
+  console.log('📤 Sending as: PeerQA');
+  console.log('🎯 Target: @peercloud (U097WU1GMLJ)');
+  console.log(`📝 Messages: ${messages.length}\n`);
+  
+  const targetChannel = 'C0952LTF7DG'; // #peerbot-qa
+  let firstMessageTs = null;
+  
+  try {
+    for (let i = 0; i < messages.length; i++) {
+      const prompt = messages[i];
+      const isFirstMessage = i === 0;
+      const message = `<@U097WU1GMLJ> ${prompt}`;
+      
+      console.log(`📨 Sending message ${i + 1}/${messages.length}${isFirstMessage ? ' (initial)' : ' (thread)'}...`);
+      
+      const requestBody = {
+        channel: targetChannel,
+        text: message
+      };
+      
+      // If not the first message, send in thread
+      if (!isFirstMessage && firstMessageTs) {
+        requestBody.thread_ts = firstMessageTs;
+      }
+      
+      const msg = await makeSlackRequest('chat.postMessage', requestBody);
+      
+      if (isFirstMessage) {
+        firstMessageTs = msg.ts;
+      }
+      
+      console.log(`✅ Sent: "${message}"`);
+      console.log(`   Timestamp: ${msg.ts}`);
+      console.log(`   ${isFirstMessage ? 'Thread started' : 'Added to thread'}\n`);
+      
+      // Wait a bit between messages
+      if (i < messages.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    // Wait a bit for the bot to start processing
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Check for checkmark reaction on original message
+    console.log('⏳ Checking for bot processing...');
+    const hasCheckmark = await checkForReaction(targetChannel, firstMessageTs, 'white_check_mark', timeout);
+    
+    // Wait for response message
+    const response = await waitForBotResponse(targetChannel, firstMessageTs, timeout);
+    
+    if (hasCheckmark && response && response.length > 0) {
+      console.log('✅ Bot processed messages (checkmark reaction added)');
+      console.log(`✅ Bot responded with message!`);
+      console.log(`   Response: "${response[0].text?.substring(0, 200)}..."`);
+      
+      // Check if response has blocks (for blockkit)
+      if (response[0].blocks && response[0].blocks.length > 0) {
+        console.log(`   Blocks: ${response[0].blocks.length} blocks found`);
+        const actionBlocks = response[0].blocks.filter(b => b.type === 'actions');
+        if (actionBlocks.length > 0) {
+          console.log(`   ✨ Found ${actionBlocks.length} action block(s) with buttons!`);
+        }
+      }
+      
+      console.log('\n🎉 Multi-Message Test PASSED!');
+    } else if (hasCheckmark && !response) {
+      console.log('✅ Bot processed messages (checkmark reaction added)');
+      console.log('⚠️  But no response message was sent');
+      console.log('\n⚠️  Test PARTIALLY PASSED');
+    } else if (!hasCheckmark) {
+      console.log('❌ No checkmark reaction - bot may not have processed the messages');
+      console.log('\nTroubleshooting:');
+      console.log('1. Check worker pods: kubectl get pods -n peerbot | grep claude-worker');
+      console.log('2. Check dispatcher logs: kubectl logs -n peerbot -l app.kubernetes.io/component=dispatcher --tail=50');
+      process.exit(1);
+    }
+    
+    console.log('\n🔗 Channel: https://peerbotcommunity.slack.com/archives/C0952LTF7DG');
+    
+  } catch (error) {
+    console.error('❌ Multi-Message Test failed:', error.message);
+    process.exit(1);
+  }
+}
+
+async function runSingleTest(prompt, timeout = 30000) {
   console.log('🧪 Peerbot Test');
   console.log('📤 Sending as: PeerQA');
   console.log('🎯 Target: @peercloud (U097WU1GMLJ)\n');
@@ -132,10 +220,10 @@ async function runTest(prompt) {
     await new Promise(resolve => setTimeout(resolve, 3000));
     
     // Check for checkmark reaction on original message
-    const hasCheckmark = await checkForReaction(targetChannel, msg.ts, 'white_check_mark');
+    const hasCheckmark = await checkForReaction(targetChannel, msg.ts, 'white_check_mark', timeout);
     
     // Wait for response message
-    const response = await waitForBotResponse(targetChannel, msg.ts);
+    const response = await waitForBotResponse(targetChannel, msg.ts, timeout);
     
     if (hasCheckmark && response && response.length > 0) {
       console.log('✅ Bot processed message (checkmark reaction added)');
@@ -161,24 +249,45 @@ async function runTest(prompt) {
       console.log('\nTroubleshooting:');
       console.log('1. Check worker pods: kubectl get pods -n peerbot | grep claude-worker');
       console.log('2. Check dispatcher logs: kubectl logs -n peerbot -l app.kubernetes.io/component=dispatcher --tail=50');
+      process.exit(1);
     }
     
     console.log('\n🔗 Channel: https://peerbotcommunity.slack.com/archives/C0952LTF7DG');
     
   } catch (error) {
     console.error('❌ Test failed:', error.message);
+    process.exit(1);
   }
 }
 
-// Get prompt from command line arguments or use default
-const customPrompt = process.argv.slice(2).join(' ');
+// Parse command line arguments
+const args = process.argv.slice(2);
+let messages = [];
+let timeout = 30000; // default 30 seconds
 
-if (customPrompt) {
-  // Use the custom prompt
-  runTest(customPrompt);
+// Parse --timeout option
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--timeout' && args[i + 1]) {
+    timeout = parseInt(args[i + 1]) * 1000; // convert seconds to milliseconds
+    args.splice(i, 2); // remove --timeout and its value
+    break;
+  }
+}
+
+// Remaining args are messages
+messages = args.filter(arg => arg.trim().length > 0);
+
+if (messages.length > 0) {
+  if (messages.length === 1) {
+    // Single message test
+    runSingleTest(messages[0], timeout);
+  } else {
+    // Multi-message test with threading
+    runMultiMessageTest(messages, timeout);
+  }
 } else {
   // Run default tests
-  runTest('Create me a new project for my landing page of a Pet Store? It\' is a fictionary app so be creating don\'t ask me. Project name is "Pet Store {timestamp}"');
-  runTest('Create a button to add a new pet to the pet store');
-  runTest("Create 5 tasks which will each return a random number and then you will sum all them.");
+  runSingleTest('Create me a new project for my landing page of a Pet Store? It\' is a fictionary app so be creating don\'t ask me. Project name is "Pet Store {timestamp}"', timeout);
+  runSingleTest('Create a button to add a new pet to the pet store', timeout);
+  runSingleTest("Create 5 tasks which will each return a random number and then you will sum all them.", timeout);
 }

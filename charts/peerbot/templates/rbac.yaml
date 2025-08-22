@@ -24,6 +24,11 @@ rules:
     resources: ["jobs"]
     verbs: ["create", "get", "list", "watch", "delete"]
   
+  # Deployments management for persistent workers - restricted to this namespace only
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+  
   # Pods monitoring (for job status) - restricted to this namespace only
   - apiGroups: [""]
     resources: ["pods"]
@@ -77,10 +82,20 @@ rules:
     verbs: ["get"]
     resourceNames: ["peerbot-secrets"]
   
+  # ConfigMaps listing with label selectors for message queuing
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["list", "patch"]
+  
   # Self-monitoring for graceful shutdown - read-only access to own job
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get"]
+  
+  # Self-cleanup: Allow worker to delete its own deployment for graceful shutdown
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["delete"]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
