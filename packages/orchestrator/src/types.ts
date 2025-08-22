@@ -37,7 +37,7 @@ export interface ThreadMessageJob {
   channelId: string;
   messageId: string;
   messageText: string;
-  claudeSessionId?: string;
+  agentSessionId?: string;
   platformMetadata: Record<string, any>;
   claudeOptions: Record<string, any>;
   createdAt: Date;
@@ -78,7 +78,7 @@ export interface OrchestratorConfig {
   };
   queues: {
     directMessage: string;
-    threadMessage: string;
+    messageQueue: string;
   };
 }
 

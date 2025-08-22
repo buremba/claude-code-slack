@@ -35,7 +35,7 @@ function loadConfig(): OrchestratorConfig {
     },
     queues: {
       directMessage: process.env.QUEUE_DIRECT_MESSAGE || "direct_message",
-      threadMessage: process.env.QUEUE_THREAD_MESSAGE || "thread_message",
+      messageQueue: process.env.QUEUE_MESSAGE_QUEUE || "message_queue",
     },
   };
 }

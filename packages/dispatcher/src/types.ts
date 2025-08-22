@@ -19,14 +19,6 @@ export interface SlackConfig {
   allowPrivateChannels?: boolean;
 }
 
-export interface KubernetesConfig {
-  namespace: string;
-  workerImage: string;
-  cpu: string;
-  memory: string;
-  timeoutSeconds: number;
-  kubeconfig?: string;
-}
 
 export interface GitHubConfig {
   token: string;
@@ -36,7 +28,7 @@ export interface GitHubConfig {
 
 export interface QueueConfig {
   directMessage: string;
-  threadMessage: string;
+  messageQueue: string;
   connectionString: string;
   retryLimit?: number;
   retryDelay?: number;
@@ -45,12 +37,11 @@ export interface QueueConfig {
 
 export interface DispatcherConfig {
   slack: SlackConfig;
-  kubernetes: KubernetesConfig;
   github: GitHubConfig;
   claude: Partial<ClaudeExecutionOptions>;
   sessionTimeoutMinutes: number;
   logLevel?: LogLevel;
-  queues?: QueueConfig;
+  queues: QueueConfig;
 }
 
 export interface SlackContext {
@@ -87,7 +78,7 @@ export interface ThreadSession {
   username: string;
   jobName?: string;
   repositoryUrl: string;
-  claudeSessionId?: string; // Claude session ID for resumption
+  agentSessionId?: string; // Agent session ID for resumption
   lastActivity: number;
   status: "pending" | "starting" | "running" | "completed" | "error" | "timeout";
   createdAt: number;
@@ -115,16 +106,6 @@ export class DispatcherError extends Error {
   }
 }
 
-export class KubernetesError extends Error {
-  constructor(
-    public operation: string,
-    message: string,
-    public cause?: Error
-  ) {
-    super(message);
-    this.name = "KubernetesError";
-  }
-}
 
 export class GitHubRepositoryError extends Error {
   constructor(

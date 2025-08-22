@@ -36,7 +36,7 @@ export interface ThreadMessagePayload {
   channelId: string;
   messageId: string;
   messageText: string;
-  claudeSessionId?: string;
+  agentSessionId?: string;
   platformMetadata: Record<string, any>;
   claudeOptions: Record<string, any>;
 }

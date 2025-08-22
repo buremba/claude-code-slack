@@ -19,7 +19,7 @@ export interface ThreadMessagePayload {
   channelId: string;
   messageId: string;
   messageText: string;
-  claudeSessionId?: string;
+  agentSessionId?: string;
   platformMetadata: Record<string, any>;
   claudeOptions: Record<string, any>;
 }
@@ -169,7 +169,7 @@ export class WorkerQueueConsumer {
       slackResponseChannel: platformMetadata.slackResponseChannel || payload.channelId,
       slackResponseTs: platformMetadata.slackResponseTs || payload.messageId,
       claudeOptions: JSON.stringify(payload.claudeOptions),
-      resumeSessionId: payload.claudeSessionId,
+      resumeSessionId: payload.agentSessionId,
       slack: {
         token: process.env.SLACK_BOT_TOKEN!,
         refreshToken: process.env.SLACK_REFRESH_TOKEN,

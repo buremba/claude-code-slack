@@ -20,7 +20,7 @@ export class QueueSlackEventHandlers {
   private userMappings = new Map<string, string>(); // slackUserId -> githubUsername
   private recentEvents = new Map<string, number>(); // eventKey -> timestamp
   private repositoryCache = new Map<string, { repository: any; timestamp: number }>(); // username -> {repository, timestamp}
-  private sessionMappings = new Map<string, string>(); // sessionKey -> claudeSessionId
+  private sessionMappings = new Map<string, string>(); // sessionKey -> agentSessionId
   private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache TTL
 
   constructor(
@@ -370,7 +370,7 @@ export class QueueSlackEventHandlers {
         userId: context.userId,
         username,
         repositoryUrl: repository.repositoryUrl,
-        claudeSessionId: existingClaudeSessionId,
+        agentSessionId: existingClaudeSessionId,
         lastActivity: Date.now(),
         status: "pending",
         createdAt: Date.now(),
@@ -433,7 +433,7 @@ export class QueueSlackEventHandlers {
           channelId: context.channelId,
           messageId: context.messageTs,
           messageText: userRequest,
-          claudeSessionId: existingClaudeSessionId,
+          agentSessionId: existingClaudeSessionId,
           platformMetadata: {
             teamId: context.teamId,
             userDisplayName: context.userDisplayName,
@@ -448,7 +448,7 @@ export class QueueSlackEventHandlers {
         };
 
         const jobId = await this.queueProducer.enqueueThreadMessage(
-          this.config.queues?.threadMessage || "thread_message",
+          this.config.queues?.messageQueue || "message_queue",
           threadPayload
         );
 

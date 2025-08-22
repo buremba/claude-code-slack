@@ -9,6 +9,7 @@ CREATE TABLE bots (
     id SERIAL PRIMARY KEY,
     bot_id VARCHAR(100) NOT NULL UNIQUE, -- Platform bot ID (e.g., Slack bot ID)
     platform VARCHAR(50) NOT NULL, -- slack, discord, teams, etc.
+    platform_id VARCHAR(100) NOT NULL, -- workspace id for slack
     name VARCHAR(100) NOT NULL,
     token_hash VARCHAR(255), -- Hashed bot token for verification
     created_at TIMESTAMP DEFAULT NOW(),
@@ -17,27 +18,36 @@ CREATE TABLE bots (
     UNIQUE(platform, bot_id)
 );
 
--- Create users table with bot association
-CREATE TABLE chat_users (
+-- Create users table
+CREATE TABLE users (
     id SERIAL PRIMARY KEY,
-    bot_id INTEGER REFERENCES bots(id) ON DELETE CASCADE,
     platform_user_id VARCHAR(100) NOT NULL,
     platform VARCHAR(50) NOT NULL,
     github_username VARCHAR(100) NOT NULL,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
-    UNIQUE(bot_id, platform, platform_user_id)
+    UNIQUE(platform, platform_user_id)
+);
+
+-- Create user_configs table for environment variables
+CREATE TABLE user_configs (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    environment_variables HSTORE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(user_id)
 );
 
 -- Create conversation threads with bot isolation
 CREATE TABLE conversation_threads (
     id SERIAL PRIMARY KEY,
     bot_id INTEGER REFERENCES bots(id) ON DELETE CASCADE,
-    user_id INTEGER REFERENCES chat_users(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     platform VARCHAR(50) NOT NULL,
     channel_id VARCHAR(100) NOT NULL,
     thread_id VARCHAR(100) NOT NULL,
-    claude_session_id VARCHAR(255),
+    agent_session_id VARCHAR(255),
     created_at TIMESTAMP DEFAULT NOW(),
     last_activity TIMESTAMP DEFAULT NOW(),
     is_active BOOLEAN DEFAULT TRUE,
@@ -46,7 +56,8 @@ CREATE TABLE conversation_threads (
 
 -- Enable Row Level Security
 ALTER TABLE bots ENABLE ROW LEVEL SECURITY;
-ALTER TABLE chat_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_configs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE conversation_threads ENABLE ROW LEVEL SECURITY;
 
 -- Create RLS policies for bot isolation
@@ -56,11 +67,20 @@ FOR ALL USING (
     bot_id = current_setting('app.current_bot_id', true)
 );
 
-CREATE POLICY user_bot_isolation ON chat_users 
+CREATE POLICY user_isolation ON users 
 FOR ALL USING (
-    bot_id = (
-        SELECT id FROM bots 
+    platform_user_id = current_setting('app.current_user_id', true) OR
+    EXISTS (
+        SELECT 1 FROM bots 
         WHERE bot_id = current_setting('app.current_bot_id', true)
+    )
+);
+
+CREATE POLICY user_config_isolation ON user_configs 
+FOR ALL USING (
+    user_id IN (
+        SELECT id FROM users 
+        WHERE platform_user_id = current_setting('app.current_user_id', true)
     )
 );
 
@@ -112,10 +132,11 @@ $$ LANGUAGE plpgsql;
 
 -- Create indexes for performance
 CREATE INDEX idx_bots_platform_bot_id ON bots(platform, bot_id);
-CREATE INDEX idx_chat_users_bot_platform_user ON chat_users(bot_id, platform, platform_user_id);
+CREATE INDEX idx_users_platform_user ON users(platform, platform_user_id);
+CREATE INDEX idx_user_configs_user_id ON user_configs(user_id);
 CREATE INDEX idx_conversation_threads_bot_channel_thread ON conversation_threads(bot_id, platform, channel_id, thread_id);
 CREATE INDEX idx_conversation_threads_active ON conversation_threads(bot_id, is_active, last_activity);
-CREATE INDEX idx_conversation_threads_claude_session ON conversation_threads(claude_session_id) WHERE claude_session_id IS NOT NULL;
+CREATE INDEX idx_conversation_threads_agent_session ON conversation_threads(agent_session_id) WHERE agent_session_id IS NOT NULL;
 
 -- Insert default bot entry (for migration from existing system)
 INSERT INTO bots (bot_id, platform, name, created_at) 
