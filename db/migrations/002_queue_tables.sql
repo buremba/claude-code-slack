@@ -8,7 +8,7 @@ CREATE TABLE queue_jobs (
     job_id UUID NOT NULL, -- pgboss job ID
     queue_name VARCHAR(100) NOT NULL,
     job_type VARCHAR(50) NOT NULL, -- 'direct_message', 'thread_message'
-    user_id INTEGER REFERENCES chat_users(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     thread_id INTEGER REFERENCES conversation_threads(id) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT NOW(),
     completed_at TIMESTAMP,
@@ -123,15 +123,14 @@ SELECT
     qj.retry_count,
     b.bot_id,
     b.platform,
-    cu.platform_user_id,
-    cu.github_username,
+    u.platform_user_id,
     ct.channel_id,
     ct.thread_id,
-    ct.claude_session_id,
+    ct.agent_session_id,
     jp.payload
 FROM queue_jobs qj
 JOIN bots b ON qj.bot_id = b.id
-JOIN chat_users cu ON qj.user_id = cu.id
+JOIN users u ON qj.user_id = u.id
 LEFT JOIN conversation_threads ct ON qj.thread_id = ct.id
 JOIN job_payloads jp ON qj.id = jp.queue_job_id
 WHERE qj.status IN ('pending', 'active');
