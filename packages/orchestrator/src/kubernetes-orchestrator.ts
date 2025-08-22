@@ -169,7 +169,6 @@ export class KubernetesOrchestrator {
           "claude.ai/session-key": request.sessionKey,
           "claude.ai/bot-id": request.botId,
           "claude.ai/user-id": request.userId,
-          "claude.ai/username": request.username,
           "claude.ai/created-at": new Date().toISOString(),
         },
       },
@@ -222,10 +221,6 @@ export class KubernetesOrchestrator {
                   {
                     name: "USER_ID",
                     value: request.userId,
-                  },
-                  {
-                    name: "USERNAME",
-                    value: request.username,
                   },
                   {
                     name: "CHANNEL_ID",

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import PgBoss from "pg-boss";
-import type { Pool } from "pg";
+import { Pool, PoolClient } from "pg";
 import logger from "../logger";
 
 /**
@@ -22,7 +22,6 @@ export interface DirectMessagePayload {
   messageId: string;
   threadId?: string;
   messageText: string;
-  githubUsername: string;
   repositoryUrl: string;
   platformMetadata: Record<string, any>;
   claudeOptions: Record<string, any>;
@@ -43,10 +42,33 @@ export interface ThreadMessagePayload {
 
 export class QueueProducer {
   private pgBoss: PgBoss;
+  private pool: Pool;
   private isConnected = false;
 
-  constructor(connectionString: string) {
+  constructor(connectionString: string, databaseConfig?: {
+    host: string;
+    port: number;
+    database: string;
+    username: string;
+    password: string;
+    ssl?: boolean;
+  }) {
     this.pgBoss = new PgBoss(connectionString);
+    
+    // Create separate pool for RLS context management
+    if (databaseConfig) {
+      this.pool = new Pool({
+        host: databaseConfig.host,
+        port: databaseConfig.port,
+        database: databaseConfig.database,
+        user: databaseConfig.username,
+        password: databaseConfig.password,
+        ssl: databaseConfig.ssl,
+        max: 10,
+        min: 1,
+        idleTimeoutMillis: 30000,
+      });
+    }
   }
 
   /**
@@ -70,6 +92,9 @@ export class QueueProducer {
     try {
       this.isConnected = false;
       await this.pgBoss.stop();
+      if (this.pool) {
+        await this.pool.end();
+      }
       logger.info("✅ Queue producer stopped");
     } catch (error) {
       logger.error("Error stopping queue producer:", error);
@@ -95,9 +120,6 @@ export class QueueProducer {
     }
 
     try {
-      // Set bot context for RLS
-      await this.setBotContext(payload.botId);
-
       const jobId = await this.pgBoss.send(queueName, payload, {
         priority: options?.priority || 0,
         retryLimit: options?.retryLimit || 3,
@@ -133,9 +155,6 @@ export class QueueProducer {
     }
 
     try {
-      // Set bot context for RLS
-      await this.setBotContext(payload.botId);
-
       const jobId = await this.pgBoss.send(queueName, payload, {
         priority: options?.priority || 0,
         retryLimit: options?.retryLimit || 3,
@@ -154,17 +173,54 @@ export class QueueProducer {
   }
 
   /**
-   * Set bot context for Row Level Security
-   * This should be called before any database operations that require bot isolation
+   * Execute a query with bot context for RLS
    */
-  private async setBotContext(botId: string): Promise<void> {
+  async queryWithBotContext<T>(
+    botId: string,
+    query: string,
+    params?: any[]
+  ): Promise<{ rows: T[]; rowCount: number }> {
+    if (!this.pool) {
+      throw new Error("Database pool not available - queue producer not configured with database config");
+    }
+
+    const client = await this.pool.connect();
+    
     try {
-      // pgboss doesn't expose the underlying pool directly, 
-      // so we set this in process environment for the worker to use
-      process.env.CURRENT_BOT_ID = botId;
-      logger.debug(`Set bot context: ${botId}`);
+      // Set bot context for RLS policies using PostgreSQL session configuration
+      await client.query("SELECT set_config('app.current_bot_id', $1, true)", [botId]);
+      
+      const result = await client.query(query, params);
+      return {
+        rows: result.rows,
+        rowCount: result.rowCount || 0
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Update job status using the database function
+   */
+  async updateJobStatus(
+    jobId: string,
+    status: 'pending' | 'active' | 'completed' | 'failed',
+    retryCount?: number
+  ): Promise<void> {
+    if (!this.pool) {
+      logger.warn(`Cannot update job status for ${jobId} - database pool not available`);
+      return;
+    }
+
+    try {
+      const query = 'SELECT update_job_status($1, $2, $3)';
+      const params = [jobId, status, retryCount || null];
+      
+      await this.pool.query(query, params);
+      logger.debug(`Updated job ${jobId} status to: ${status}`);
     } catch (error) {
-      logger.error(`Failed to set bot context for ${botId}:`, error);
+      logger.error(`Failed to update job status for ${jobId}:`, error);
       throw error;
     }
   }
