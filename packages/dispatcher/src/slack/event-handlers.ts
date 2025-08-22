@@ -644,10 +644,25 @@ export class SlackEventHandlers {
     }
 
     const username = await this.getOrCreateUserMapping(userId, client);
-    this.repositoryCache.set(username, {
-      repository: { repositoryUrl: repoUrl },
-      timestamp: Date.now(),
-    });
+    
+    // Save to database instead of just memory cache
+    try {
+      await this.saveUserRepositoryUrl(username, userId, repoUrl);
+      
+      // Also update memory cache for immediate use
+      this.repositoryCache.set(username, {
+        repository: { repositoryUrl: repoUrl },
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      logger.error(`Failed to save repository URL for ${username}:`, error);
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: "❌ Failed to save repository URL. Please try again.",
+      });
+      return;
+    }
 
     if (channelId && threadTs) {
       await client.chat.postMessage({

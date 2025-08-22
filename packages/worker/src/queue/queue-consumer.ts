@@ -108,8 +108,12 @@ export class WorkerQueueConsumer {
     try {
       logger.info(`Processing thread message job ${job.id} for bot ${data.botId}, thread ${data.threadId}`);
 
-      // Set user context for any database operations
-      process.env.CURRENT_USER_ID = data.userId;
+      // User context should be set by orchestrator as environment variable
+      // process.env.CURRENT_USER_ID should already be set from orchestrator
+      if (!process.env.CURRENT_USER_ID) {
+        logger.warn(`CURRENT_USER_ID not set in environment, using userId from payload: ${data.userId}`);
+        process.env.CURRENT_USER_ID = data.userId;
+      }
 
       // Convert queue payload to WorkerConfig format
       const workerConfig = this.payloadToWorkerConfig(data);
