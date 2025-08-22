@@ -173,6 +173,13 @@ export class QueuePersistentClaudeWorker {
   }
 
   /**
+   * Stop the worker (public method)
+   */
+  async stop(): Promise<void> {
+    await this.shutdown();
+  }
+
+  /**
    * Graceful shutdown
    */
   private async shutdown(): Promise<void> {

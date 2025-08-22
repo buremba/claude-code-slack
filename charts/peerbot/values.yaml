@@ -53,14 +53,17 @@ dispatcher:
     timeoutSeconds: 5
     failureThreshold: 3
 
-# Worker (ephemeral job) configuration
+# Worker (KEDA-scaled deployment) configuration
 worker:
+  replicas: 1  # Initial replicas - KEDA will override this
+  logLevel: info
+  
   image:
     repository: claude-worker
     tag: latest
     pullPolicy: Always
   
-  # Optimized resources for worker jobs (reduced by ~50%)
+  # Optimized resources for worker deployments (reduced by ~50%)
   resources:
     requests:
       cpu: 500m
@@ -85,22 +88,7 @@ worker:
     size: 10Gi
     storageClass: ""  # Use default storage class
 
-# Orchestrator (queue consumer) configuration
-orchestrator:
-  replicas: 1
-  
-  image:
-    repository: peerbot-orchestrator
-    tag: latest
-    pullPolicy: Always
-  
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      cpu: 500m
-      memory: 1Gi
+# Orchestrator removed - replaced with KEDA worker scaling
 
 # PostgreSQL configuration
 postgresql:
@@ -250,6 +238,23 @@ keda:
       metricName: slack_messages_pending
       threshold: "1"
       query: sum(rate(slack_messages_received_total[1m]))
+  
+  # Worker-specific KEDA configuration for PostgreSQL queue scaling
+  worker:
+    enabled: true
+    pollingInterval: 15  # Check queue every 15 seconds (more responsive)
+    cooldownPeriod: 120  # 2 minutes before scaling down (faster than dispatcher)
+    minReplicas: 0  # Scale to zero when no jobs
+    maxReplicas: 20  # Allow up to 20 concurrent workers
+    jobThreshold: 1  # Scale up when 1 or more jobs are pending
+    queryTimeout: 30  # PostgreSQL query timeout in seconds
+    
+    # Scaling behavior
+    scaleDownStabilization: 300  # 5 minutes stability before scale down
+    scaleDownPercent: 25  # Scale down 25% at a time
+    scaleUpStabilization: 60  # 1 minute stability before scale up
+    scaleUpPercent: 100  # Can double workers quickly
+    scaleUpPods: 5  # Or add 5 workers at once
 
 # Pod disruption budget
 podDisruptionBudget:

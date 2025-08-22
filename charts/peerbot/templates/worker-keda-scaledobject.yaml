@@ -1,0 +1,54 @@
+{{- if .Values.keda.worker.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "peerbot.fullname" . }}-worker-scaler
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker-scaler
+spec:
+  scaleTargetRef:
+    name: {{ include "peerbot.fullname" . }}-worker
+  pollingInterval: {{ .Values.keda.worker.pollingInterval | default 15 }}
+  cooldownPeriod: {{ .Values.keda.worker.cooldownPeriod | default 120 }}
+  minReplicaCount: {{ .Values.keda.worker.minReplicas | default 0 }}
+  maxReplicaCount: {{ .Values.keda.worker.maxReplicas | default 20 }}
+  
+  triggers:
+  - type: postgresql
+    metadata:
+      # Connection string from environment variable
+      connectionFromEnv: KEDA_DATABASE_URL
+      # Query to count pending jobs in both direct_message and messageQueue
+      query: |
+        SELECT COUNT(*) FROM pgboss.job 
+        WHERE name IN ('{{ .Values.queues.directMessage }}', '{{ .Values.queues.messageQueue }}') 
+        AND state IN ('created', 'retry')
+        AND startafter <= now()
+      # Scale when there are jobs pending (one worker per job for better responsiveness)
+      targetQueryValue: "{{ .Values.keda.worker.jobThreshold | default 1 }}"
+      # Connection timeout
+      queryTimeout: "{{ .Values.keda.worker.queryTimeout | default 30 }}"
+
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          # Prevent rapid scale down to avoid interrupting work
+          stabilizationWindowSeconds: {{ .Values.keda.worker.scaleDownStabilization | default 300 }}
+          policies:
+          - type: Percent
+            value: {{ .Values.keda.worker.scaleDownPercent | default 25 }}
+            periodSeconds: 60
+        scaleUp:
+          # Allow rapid scale up for responsiveness
+          stabilizationWindowSeconds: {{ .Values.keda.worker.scaleUpStabilization | default 60 }}
+          policies:
+          - type: Percent
+            value: {{ .Values.keda.worker.scaleUpPercent | default 100 }}
+            periodSeconds: 15
+          - type: Pods
+            value: {{ .Values.keda.worker.scaleUpPods | default 5 }}
+            periodSeconds: 15
+{{- end }}
