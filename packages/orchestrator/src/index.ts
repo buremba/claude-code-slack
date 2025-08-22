@@ -27,8 +27,8 @@ function loadConfig(): OrchestratorConfig {
       ssl: process.env.DATABASE_SSL === "true",
     },
     pgboss: {
-      connectionString: process.env.PGBOSS_CONNECTION_STRING || 
-        `postgres://${process.env.DATABASE_USER}:${process.env.DATABASE_PASSWORD}@${process.env.DATABASE_HOST}:${process.env.DATABASE_PORT}/${process.env.DATABASE_NAME}`,
+      connectionString: process.env.PGBOSS_CONNECTION_STRING ||
+        `postgres://${encodeURIComponent(process.env.DATABASE_USER || "")}:${encodeURIComponent(process.env.DATABASE_PASSWORD || "" )}@${process.env.DATABASE_HOST}:${process.env.DATABASE_PORT}/${process.env.DATABASE_NAME}`,
       retryLimit: parseInt(process.env.PGBOSS_RETRY_LIMIT || "3"),
       retryDelay: parseInt(process.env.PGBOSS_RETRY_DELAY || "30"),
       expireInHours: parseInt(process.env.PGBOSS_EXPIRE_HOURS || "24"),

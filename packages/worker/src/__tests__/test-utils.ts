@@ -4,6 +4,8 @@
  * Test utilities for worker package
  */
 
+import { jest } from "bun:test";
+
 /**
  * Mock environment variables for testing
  */

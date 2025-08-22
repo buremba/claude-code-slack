@@ -4,6 +4,7 @@
  * Test utilities for dispatcher package
  */
 
+import { jest } from "bun:test";
 import type { WorkerJobRequest } from "../types";
 
 /**

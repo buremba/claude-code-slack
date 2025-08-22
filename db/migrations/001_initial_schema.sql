@@ -61,26 +61,42 @@ ALTER TABLE conversation_threads ENABLE ROW LEVEL SECURITY;
 
 -- Create RLS policies for user-based isolation
 -- Each user can see all bots but only their own conversation history
-CREATE POLICY user_isolation ON bots 
-FOR ALL USING (true); -- Users can see all bots
+CREATE POLICY user_isolation ON bots
+FOR ALL USING (true)
+WITH CHECK (true); -- Users can see all bots
 
-CREATE POLICY user_data_isolation ON users 
+CREATE POLICY user_data_isolation ON users
 FOR ALL USING (
+    platform_user_id = current_setting('app.current_user_id', true)
+)
+WITH CHECK (
     platform_user_id = current_setting('app.current_user_id', true)
 );
 
-CREATE POLICY user_config_isolation ON user_configs 
+CREATE POLICY user_config_isolation ON user_configs
 FOR ALL USING (
     user_id IN (
-        SELECT id FROM users 
+        SELECT id FROM users
+        WHERE platform_user_id = current_setting('app.current_user_id', true)
+    )
+)
+WITH CHECK (
+    user_id IN (
+        SELECT id FROM users
         WHERE platform_user_id = current_setting('app.current_user_id', true)
     )
 );
 
-CREATE POLICY thread_user_isolation ON conversation_threads 
+CREATE POLICY thread_user_isolation ON conversation_threads
 FOR ALL USING (
     user_id IN (
-        SELECT id FROM users 
+        SELECT id FROM users
+        WHERE platform_user_id = current_setting('app.current_user_id', true)
+    )
+)
+WITH CHECK (
+    user_id IN (
+        SELECT id FROM users
         WHERE platform_user_id = current_setting('app.current_user_id', true)
     )
 );

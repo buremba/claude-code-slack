@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { describe, it, expect, beforeEach, afterEach, mock, jest } from "bun:test";
+jest.mock = mock.module;
 
 // Mock core-runner since worker depends on it
 jest.mock("../../core-runner", () => ({
