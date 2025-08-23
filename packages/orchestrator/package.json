@@ -12,10 +12,12 @@
   "dependencies": {
     "@kubernetes/client-node": "^0.21.0",
     "pg": "^8.11.5",
-    "pgboss": "^10.0.4"
+    "pg-boss": "^10.0.4",
+    "dotenv": "^17.2.1"
   },
   "devDependencies": {
     "@types/pg": "^8.11.6",
+    "@types/node": "^20.0.0",
     "typescript": "^5.0.0"
   }
 }

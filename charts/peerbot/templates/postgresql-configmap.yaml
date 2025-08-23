@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "peerbot.fullname" . }}-postgresql-init
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Values.kubernetes.namespace }}
   labels:
     {{- include "peerbot.labels" . | nindent 4 }}
     app.kubernetes.io/component: postgresql
@@ -22,11 +22,11 @@ data:
     
   02-init-schema.sql: |
     -- Load the main schema migration
-    \i /docker-entrypoint-initdb.d/schema/001_initial_schema.sql
-    \i /docker-entrypoint-initdb.d/schema/002_queue_tables.sql
+    \i /docker-entrypoint-initdb.d/schema-001_initial_schema.sql
+    \i /docker-entrypoint-initdb.d/schema-002_queue_tables.sql
     
-  schema/001_initial_schema.sql: |
+  schema-001_initial_schema.sql: |
 {{ .Files.Get "../../db/migrations/001_initial_schema.sql" | indent 4 }}
     
-  schema/002_queue_tables.sql: |
+  schema-002_queue_tables.sql: |
 {{ .Files.Get "../../db/migrations/002_queue_tables.sql" | indent 4 }}

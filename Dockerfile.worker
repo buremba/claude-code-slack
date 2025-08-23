@@ -1,45 +1,38 @@
-FROM node:20-alpine
+FROM oven/bun:1.1.0
 
 WORKDIR /app
 
-# Install runtime dependencies
-RUN apk add --no-cache \
+# Install runtime dependencies including Node.js
+RUN apt-get update && apt-get install -y \
     git \
     curl \
     bash \
     openssh-client \
     jq \
-    sudo
+    sudo \
+    ca-certificates \
+    && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install cloudflared
-RUN curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" -o /usr/local/bin/cloudflared && \
+RUN curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" -o /usr/local/bin/cloudflared && \
     chmod +x /usr/local/bin/cloudflared
 
 # Create a non-root user with home directory
-RUN addgroup -g 1001 claude && \
-    adduser -u 1001 -G claude -h /home/claude -D claude
-
-# Install bun globally for all users
-RUN curl -fsSL https://bun.sh/install | bash
-ENV PATH="/root/.bun/bin:${PATH}"
-ENV BUN_INSTALL="/root/.bun"
+RUN addgroup --gid 1001 claude && \
+    adduser --system --uid 1001 --ingroup claude --home /home/claude claude
 
 # Install Claude Code CLI globally and make it accessible to all users
 RUN bun install -g @anthropic-ai/claude-code@1.0.59 && \
+    ls -la /root/.bun/bin/ && \
     ln -sf /root/.bun/bin/claude /usr/local/bin/claude && \
-    chmod +x /usr/local/bin/claude && \
-    chmod +x /root/.bun/bin/claude && \
     echo "Testing claude command..." && \
     /usr/local/bin/claude --version
 
 # Ensure the non-root user can also access bun and claude
-# Add to both bashrc and global environment for broader compatibility
-RUN echo 'export PATH="/root/.bun/bin:$PATH"' >> /home/claude/.bashrc && \
-    echo 'export BUN_INSTALL="/root/.bun"' >> /home/claude/.bashrc
-
-# Add environment variables for non-root user access
-ENV PATH="/root/.bun/bin:${PATH}" \
-    BUN_INSTALL="/root/.bun"
+RUN echo 'export PATH="/home/bun/.bun/bin:$PATH"' >> /home/claude/.bashrc && \
+    echo 'export BUN_INSTALL="/home/bun/.bun"' >> /home/claude/.bashrc
 
 # Copy package files
 COPY package.json ./
@@ -47,6 +40,7 @@ COPY tsconfig.json ./
 COPY packages/worker/package.json ./packages/worker/
 COPY packages/core-runner/package.json ./packages/core-runner/
 COPY packages/dispatcher/package.json ./packages/dispatcher/
+COPY packages/orchestrator/package.json ./packages/orchestrator/
 
 # Install all dependencies including devDependencies for building
 RUN bun install

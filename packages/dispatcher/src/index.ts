@@ -155,27 +155,44 @@ export class SlackDispatcher {
         // In socket mode, add connection event handlers first
         const socketModeClient = (this.app as any).receiver?.client;
         if (socketModeClient) {
+          logger.info("Setting up Socket Mode event handlers...");
+          
           socketModeClient.on('slack_event', (event: any, _body: any) => {
-            logger.debug('Socket Mode event received:', event.type);
+            logger.info('Socket Mode event received:', event.type);
           });
           
           socketModeClient.on('disconnect', () => {
-            logger.debug('Socket Mode disconnected, will auto-reconnect');
+            logger.warn('Socket Mode disconnected, will auto-reconnect');
           });
           
           socketModeClient.on('error', (error: any) => {
-            if (error.message?.includes('server explicit disconnect')) {
-              logger.debug('Socket Mode connection reset (normal)');
-            } else {
-              logger.warn('Socket Mode error:', error.message);
-            }
+            logger.error('Socket Mode error:', error);
           });
+
+          socketModeClient.on('ready', () => {
+            logger.info('Socket Mode client ready');
+          });
+
+          socketModeClient.on('connecting', () => {
+            logger.info('Socket Mode connecting...');
+          });
+
+          socketModeClient.on('connected', () => {
+            logger.info('Socket Mode connected successfully!');
+          });
+        } else {
+          logger.warn("No Socket Mode client found in receiver");
         }
         
-        // In socket mode, just start
+        // In socket mode, just start with timeout
         logger.info("Starting Slack app in Socket Mode...");
         try {
-          await this.app.start();
+          const startPromise = this.app.start();
+          const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error("Socket Mode start timeout after 60 seconds")), 60000);
+          });
+          
+          await Promise.race([startPromise, timeoutPromise]);
           logger.info("✅ Socket Mode connection established!");
         } catch (socketError) {
           logger.error("❌ Failed to start Socket Mode:", socketError);
@@ -240,10 +257,22 @@ export class SlackDispatcher {
    */
   private async initializeBotInfo(config: DispatcherConfig): Promise<void> {
     try {
-      // Get bot's own user ID and bot ID using auth.test
-      const authResult = await this.app.client.auth.test({
-        token: config.slack.token
+      logger.info("Bot IDs not configured, calling auth.test via HTTP...");
+      
+      // Use direct HTTP call instead of Slack Bolt client
+      const response = await fetch("https://slack.com/api/auth.test", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${config.slack.token}`,
+          "Content-Type": "application/json"
+        }
       });
+      
+      const authResult = await response.json() as any;
+      
+      if (!authResult.ok) {
+        throw new Error(`Auth test failed: ${authResult.error || "Unknown error"}`);
+      }
       
       const botUserId = authResult.user_id as string;
       const botId = authResult.bot_id as string;
@@ -360,7 +389,7 @@ async function main() {
       logLevel: process.env.LOG_LEVEL as any || LogLevel.INFO,
       // Queue configuration (required)
       queues: {
-        connectionString: process.env.PGBOSS_CONNECTION_STRING!,
+        connectionString: process.env.POSTGRESQL_CONNECTION_STRING!,
         directMessage: process.env.QUEUE_DIRECT_MESSAGE || "direct_message",
         messageQueue: process.env.QUEUE_MESSAGE_QUEUE || "message_queue",
         retryLimit: parseInt(process.env.PGBOSS_RETRY_LIMIT || "3"),
@@ -377,7 +406,7 @@ async function main() {
       throw new Error("GITHUB_TOKEN is required");
     }
     if (!config.queues.connectionString) {
-      throw new Error("PGBOSS_CONNECTION_STRING is required");
+      throw new Error("POSTGRESQL_CONNECTION_STRING is required");
     }
 
     // Create and start dispatcher

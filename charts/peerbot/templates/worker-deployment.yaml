@@ -1,8 +1,9 @@
+{{- if .Values.worker.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "peerbot.fullname" . }}-worker
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Values.kubernetes.namespace }}
   labels:
     {{- include "peerbot.labels" . | nindent 4 }}
     app.kubernetes.io/component: worker
@@ -20,6 +21,39 @@ spec:
         app.kubernetes.io/component: worker
     spec:
       serviceAccountName: {{ include "peerbot.fullname" . }}-worker
+      initContainers:
+      - name: wait-for-postgres
+        image: postgres:17-alpine
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "100m"
+        env:
+        - name: PGHOST
+          value: {{ include "peerbot.fullname" . }}-postgresql
+        - name: PGPORT
+          value: "5432"
+        - name: PGUSER
+          value: {{ .Values.postgresql.username }}
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "peerbot.fullname" . }}-secrets
+              key: postgresql-password
+        - name: PGDATABASE
+          value: {{ .Values.postgresql.database }}
+        command:
+        - sh
+        - -c
+        - |
+          until pg_isready; do
+            echo "Waiting for PostgreSQL to be ready..."
+            sleep 2
+          done
+          echo "PostgreSQL is ready!"
       containers:
       - name: worker
         image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
@@ -34,11 +68,6 @@ spec:
             secretKeyRef:
               name: {{ include "peerbot.fullname" . }}-secrets
               key: postgresql-password
-        
-        # KEDA database URL (same as above, for KEDA scaler)
-        - name: KEDA_DATABASE_URL
-          value: "postgres://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "peerbot.fullname" . }}-postgresql:5432/{{ .Values.postgresql.database }}"
-        
         # Queue configuration
         - name: QUEUE_DIRECT_MESSAGE
           value: {{ .Values.queues.directMessage }}
@@ -56,6 +85,8 @@ spec:
         # Worker configuration
         - name: WORKER_MODE
           value: "queue"
+        - name: USER_ID
+          value: "worker"
         - name: LOG_LEVEL
           value: {{ .Values.worker.logLevel | default "info" }}
         
@@ -103,3 +134,4 @@ spec:
       - name: workspace
         persistentVolumeClaim:
           claimName: {{ include "peerbot.fullname" . }}-worker-pvc
+{{- end }}

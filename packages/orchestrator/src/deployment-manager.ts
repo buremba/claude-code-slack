@@ -69,7 +69,7 @@ export class DeploymentManager {
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_CREATE_FAILED,
-        `Failed to ensure user queue for ${userId}: ${error.message}`,
+        `Failed to ensure user queue for ${userId}: ${error instanceof Error ? error.message : String(error)}`,
         { userId, error },
         true
       );
@@ -270,7 +270,7 @@ export class DeploymentManager {
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_SCALE_FAILED,
-        `Failed to scale deployment ${deploymentName}: ${error.message}`,
+        `Failed to scale deployment ${deploymentName}: ${error instanceof Error ? error.message : String(error)}`,
         { deploymentName, replicas, error },
         true
       );
@@ -316,7 +316,7 @@ export class DeploymentManager {
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.SECRET_CREATE_FAILED,
-        `Failed to create secret for user ${userId}: ${error.message}`,
+        `Failed to create secret for user ${userId}: ${error instanceof Error ? error.message : String(error)}`,
         { userId, error },
         true
       );

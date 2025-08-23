@@ -1,3 +1,4 @@
+{{- if .Values.dispatcher.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -30,6 +31,39 @@ spec:
       serviceAccountName: {{ include "peerbot.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+      - name: wait-for-postgres
+        image: postgres:16
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "100m"
+        env:
+        - name: PGHOST
+          value: {{ include "peerbot.fullname" . }}-postgresql
+        - name: PGPORT
+          value: "5432"
+        - name: PGUSER
+          value: {{ .Values.postgresql.username }}
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "peerbot.fullname" . }}-secrets
+              key: postgresql-password
+        - name: PGDATABASE
+          value: {{ .Values.postgresql.database }}
+        command:
+        - sh
+        - -c
+        - |
+          until pg_isready; do
+            echo "Waiting for PostgreSQL to be ready..."
+            sleep 2
+          done
+          echo "PostgreSQL is ready!"
       containers:
         - name: dispatcher
           securityContext:
@@ -83,10 +117,6 @@ spec:
               value: "{{ .Values.slack.allowDirectMessages }}"
             - name: SLACK_ALLOW_PRIVATE_CHANNELS
               value: "{{ .Values.slack.allowPrivateChannels }}"
-            - name: ENABLE_STATUS_REACTIONS
-              value: "{{ .Values.slack.enableStatusReactions }}"
-            - name: ENABLE_PROGRESS_UPDATES
-              value: "{{ .Values.slack.enableProgressUpdates }}"
             
             # Kubernetes configuration
             - name: KUBERNETES_NAMESPACE
@@ -104,6 +134,15 @@ spec:
             - name: WORKER_TIMEOUT_SECONDS
               value: "{{ .Values.worker.job.timeoutSeconds }}"
             
+            # Database configuration for pgboss
+            - name: POSTGRESQL_CONNECTION_STRING
+              value: "postgres://{{ .Values.postgresql.username }}:peerbot123@{{ include "peerbot.fullname" . }}-postgresql:5432/{{ .Values.postgresql.database }}"
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "peerbot.fullname" . }}-secrets
+                  key: postgresql-password
+            
             # GitHub configuration
             - name: GITHUB_TOKEN
               valueFrom:
@@ -115,15 +154,7 @@ spec:
                 configMapKeyRef:
                   name: {{ include "peerbot.fullname" . }}-config
                   key: github-organization
-            
-
-            - name: GOOGLE_CLOUD_PROJECT
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ include "peerbot.fullname" . }}-config
-                  key: gcs-project-id
-                  optional: true
-            
+          
             # Claude configuration
             - name: MODEL
               value: "{{ .Values.claude.model }}"
@@ -156,4 +187,4 @@ spec:
       {{- with .Values.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- end }}{{- end }}

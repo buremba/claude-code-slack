@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: {{ include "peerbot.fullname" . }}-postgresql
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Values.kubernetes.namespace }}
   labels:
     {{- include "peerbot.labels" . | nindent 4 }}
     app.kubernetes.io/component: postgresql
@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
       - name: postgresql
-        image: postgres:17-alpine
+        image: postgres:16
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_DB

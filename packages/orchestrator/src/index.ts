@@ -7,7 +7,7 @@ import { DatabasePool } from './database-pool';
 import { DeploymentManager } from './deployment-manager';
 import { QueueConsumer } from './queue-consumer';
 
-export class PeerbotOrchestrator {
+class PeerbotOrchestrator {
   private config: OrchestratorConfig;
   private dbPool: DatabasePool;
   private deploymentManager: DeploymentManager;
@@ -72,7 +72,7 @@ export class PeerbotOrchestrator {
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.DATABASE_CONNECTION_FAILED,
-        `Database connection failed: ${error.message}`,
+        `Database connection failed: ${error instanceof Error ? error.message : String(error)}`,
         { error },
         false
       );
@@ -113,7 +113,7 @@ export class PeerbotOrchestrator {
           const notReady = {
             service: 'peerbot-orchestrator',
             status: 'not ready',
-            error: error.message,
+            error: error instanceof Error ? error.message : String(error),
             timestamp: new Date().toISOString()
           };
           res.statusCode = 503;
@@ -128,7 +128,7 @@ export class PeerbotOrchestrator {
           res.end(JSON.stringify(stats));
         } catch (error) {
           res.statusCode = 500;
-          res.end(JSON.stringify({ error: error.message }));
+          res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
         }
         
       } else {
@@ -210,10 +210,10 @@ async function main() {
         ssl: process.env.DATABASE_SSL === 'true'
       },
       queues: {
-        connectionString: process.env.PGBOSS_CONNECTION_STRING!,
+        connectionString: process.env.POSTGRESQL_CONNECTION_STRING!,
         retryLimit: parseInt(process.env.PGBOSS_RETRY_LIMIT || '3'),
         retryDelay: parseInt(process.env.PGBOSS_RETRY_DELAY || '30'),
-        expireInHours: parseInt(process.env.PGBOSS_EXPIRE_HOURS || '24')
+        expireInHours: parseInt(process.env.PGBOSS_EXPIRE_HOURS || '22')
       },
       worker: {
         image: {
@@ -238,7 +238,7 @@ async function main() {
 
     // Validate required configuration
     if (!config.queues.connectionString) {
-      throw new Error('PGBOSS_CONNECTION_STRING is required');
+      throw new Error('POSTGRESQL_CONNECTION_STRING is required');
     }
 
     if (!config.database.password) {

@@ -1,17 +1,19 @@
-FROM node:20-alpine
+FROM oven/bun:1.1.0
+
+# Install required packages
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Install bun for build step
-RUN apk add --no-cache curl bash && \
-    curl -fsSL https://bun.sh/install | bash
-ENV PATH="/root/.bun/bin:${PATH}"
 
 # Copy all package files
 COPY package.json ./
 COPY packages/dispatcher/package.json ./packages/dispatcher/
 COPY packages/core-runner/package.json ./packages/core-runner/
 COPY packages/worker/package.json ./packages/worker/
+COPY packages/orchestrator/package.json ./packages/orchestrator/
 
 # Install dependencies
 RUN bun install
@@ -28,5 +30,12 @@ RUN bun run build.ts
 ENV NODE_ENV=production
 EXPOSE 3000
 
-# Use Node.js instead of Bun for runtime (better WebSocket support)
-CMD ["node", "dist/src/index.js"]
+# Create non-root user
+RUN addgroup --gid 1001 --system nodejs && \
+    adduser --system --uid 1001 dispatcher
+
+# Switch to non-root user
+USER dispatcher
+
+# Use Bun for runtime (better performance)
+CMD ["bun", "run", "dist/src/index.js"]

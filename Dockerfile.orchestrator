@@ -1,19 +1,20 @@
 # Dockerfile for Orchestrator
 FROM oven/bun:1.1.0
 
-# Install required packages for Kubernetes client
+# Install required packages for Kubernetes client and curl for health checks
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
 # Copy package files
-COPY packages/orchestrator/package.json packages/orchestrator/bun.lock* ./
+COPY packages/orchestrator/package.json ./
 
-# Install dependencies
-RUN bun install --production
+# Install dependencies including devDependencies for build
+RUN bun install
 
 # Copy source code
 COPY packages/orchestrator/src ./src
@@ -23,8 +24,8 @@ COPY packages/orchestrator/tsconfig.json ./
 RUN bun run build
 
 # Create non-root user
-RUN addgroup --gid 1001 --system nodejs
-RUN adduser --system --uid 1001 orchestrator
+RUN addgroup --gid 1001 orchestrator && \
+    adduser --system --uid 1001 --ingroup orchestrator --home /home/orchestrator orchestrator
 
 # Switch to non-root user
 USER orchestrator
@@ -36,5 +37,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD curl -f http://localhost:8080/health || exit 1
 
-# Start the orchestrator
-CMD ["bun", "src/index.ts"]
+# Start the orchestrator with bun
+CMD ["bun", "dist/index.js"]

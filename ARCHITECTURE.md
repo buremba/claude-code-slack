@@ -20,6 +20,18 @@ graph TB
             EM[Event Manager]
             SM[Session Manager]
             RM[Repository Manager]
+            QP[Queue Producer]
+        end
+
+        subgraph OrchestratorPod[Orchestrator Pod]
+            O[Orchestrator Service<br/>Long-lived]
+            QC[Queue Consumer]
+            DM_K8S[Deployment Manager]
+        end
+
+        subgraph PostgreSQLDB[PostgreSQL Database]
+            PG[PostgreSQL<br/>StatefulSet]
+            QB[pgboss Queues]
         end
 
         subgraph WorkerPods[Worker Pods]
@@ -29,7 +41,8 @@ graph TB
         end
 
         subgraph Storage[Storage]
-            PV[Persistent Volume<br/>10GB per worker]
+            PV[Persistent Volume<br/>10GB shared]
+            PG_PV[PostgreSQL Volume<br/>8Gi]
             S[Kubernetes Secrets]
         end
     end
@@ -43,9 +56,16 @@ graph TB
     DM --> D
     HT --> D
     
-    D --> W1
-    D --> W2
-    D --> W3
+    D --> QP
+    QP --> QB
+    QB --> QC
+    QC --> DM_K8S
+    DM_K8S --> W1
+    DM_K8S --> W2
+    DM_K8S --> W3
+    
+    PG --> PG_PV
+    QB --> PG
     
     W1 --> PV
     W2 --> PV
@@ -73,6 +93,8 @@ sequenceDiagram
     participant User
     participant Channel
     participant Dispatcher
+    participant Queue[PostgreSQL Queue]
+    participant Orchestrator
     participant Worker
     participant GitHub
 
@@ -80,12 +102,17 @@ sequenceDiagram
     Channel->>Dispatcher: app_mention event
     Dispatcher->>Dispatcher: Extract context (channel bookmarks)
     Note over Dispatcher: Check channel bookmarks for<br/>repository configuration
-    Dispatcher->>Worker: Create job with context
+    Dispatcher->>Queue: Publish job to pgboss queue
+    Queue->>Orchestrator: Queue consumer picks up job
+    Orchestrator->>Orchestrator: Create K8s deployment
+    Orchestrator->>Worker: Start worker pod
     Worker->>GitHub: Clone/pull repository
     Worker->>Worker: Execute Claude CLI
     Worker-->>Channel: Stream progress updates
     Worker->>GitHub: Commit changes
     Worker-->>Channel: Final response
+    Worker->>Orchestrator: Job completion signal
+    Orchestrator->>Orchestrator: Scale deployment to 0 after 5min
 ```
 
 **Channel Context Details:**
@@ -102,6 +129,8 @@ sequenceDiagram
     participant DM
     participant HomeTab
     participant Dispatcher
+    participant Queue[PostgreSQL Queue]
+    participant Orchestrator
     participant Worker
     participant GitHub
 
@@ -111,12 +140,17 @@ sequenceDiagram
     User->>DM: Send coding request
     DM->>Dispatcher: message event
     Dispatcher->>Dispatcher: Get user's repository
-    Dispatcher->>Worker: Create job with user repo
+    Dispatcher->>Queue: Publish job to pgboss queue
+    Queue->>Orchestrator: Queue consumer picks up job
+    Orchestrator->>Orchestrator: Create K8s deployment
+    Orchestrator->>Worker: Start worker pod
     Worker->>GitHub: Clone user-username
     Worker->>Worker: Execute Claude CLI
     Worker-->>DM: Stream progress updates
     Worker->>GitHub: Commit changes
     Worker-->>DM: Final response
+    Worker->>Orchestrator: Job completion signal
+    Orchestrator->>Orchestrator: Scale deployment to 0 after 5min
 ```
 
 **DM Context Details:**
@@ -134,6 +168,8 @@ sequenceDiagram
     participant User
     participant Slack
     participant Dispatcher
+    participant Queue[PostgreSQL Queue]
+    participant Orchestrator
     participant Worker
     participant Claude
 
@@ -141,15 +177,23 @@ sequenceDiagram
     Slack->>Dispatcher: Event received
     Note over Dispatcher: Check rate limits<br/>Check permissions
     Dispatcher->>Slack: Add 👀 (eyes) reaction
-    Dispatcher->>Worker: Create K8s Job
+    Dispatcher->>Queue: Publish job to pgboss queue
+    Queue->>Orchestrator: Queue consumer picks up job
+    Orchestrator->>Orchestrator: Create K8s deployment
+    Orchestrator->>Worker: Start worker pod
     Worker->>Slack: Remove 👀, Add ⚙️ (gear)
     Worker->>Claude: Execute prompt
     Claude-->>Slack: Stream progress
     alt Success
         Worker->>Slack: Remove ⚙️, Add ✅ (white_check_mark)
+        Worker->>Orchestrator: Signal completion
+        Note over Orchestrator: Scale deployment to 0 after 5min
     else Error
         Worker->>Slack: Remove ⚙️, Add ❌ (x)
+        Worker->>Orchestrator: Signal error
+        Note over Orchestrator: Scale deployment to 0 after 5min
     else Timeout
+        Orchestrator->>Worker: Send SIGTERM (5min timeout)
         Worker->>Slack: Remove ⚙️, Add ⏳ (hourglass)
     else Terminated
         Worker->>Slack: Remove ⚙️, Add 🛑 (stop_sign)
@@ -310,7 +354,7 @@ sequenceDiagram
 ## Component Details
 
 ### Dispatcher Service
-- **Purpose**: Handle Slack events, manage sessions, create worker jobs
+- **Purpose**: Handle Slack events, manage sessions, publish jobs to queue
 - **Lifecycle**: Long-lived deployment (always running)
 - **Responsibilities**:
   - Slack event routing
@@ -318,6 +362,27 @@ sequenceDiagram
   - Session management
   - GitHub repository creation
   - Home Tab updates
+  - Queue job publishing (pgboss producer)
+
+### Orchestrator Service
+- **Purpose**: Consume queue jobs and manage Kubernetes worker deployments
+- **Lifecycle**: Long-lived deployment (always running)
+- **Responsibilities**:
+  - Queue job consumption (pgboss consumer)
+  - Kubernetes deployment management
+  - Worker pod lifecycle (create, scale, cleanup)
+  - 5-minute idle timeout enforcement
+  - Simple deployment scaling (1 replica → 0 after idle)
+  - Health monitoring endpoints (/health, /ready, /stats)
+
+### PostgreSQL Database
+- **Purpose**: Reliable queue storage and bot isolation
+- **Lifecycle**: StatefulSet with persistent storage (8Gi)
+- **Responsibilities**:
+  - pgboss queue storage (direct_message, thread_message queues)
+  - Job persistence and retry logic
+  - Bot-specific queue isolation
+  - Database migrations (001_initial_schema.sql, 002_queue_tables.sql)
 
 ### Worker Pods
 - **Purpose**: Execute Claude CLI commands in isolated environments
@@ -328,6 +393,7 @@ sequenceDiagram
   - Stream progress to Slack
   - Commit and push changes
   - Manage persistent session data
+  - Signal completion to orchestrator
 
 ### Persistent Storage (Kubernetes PVC)
 - **Type**: Kubernetes PersistentVolumeClaim (PVC)
@@ -360,19 +426,23 @@ sequenceDiagram
 
 ## Scaling & Performance
 
-### Auto-scaling Configuration
-- **Dispatcher**: KEDA-based (scales to 0 when idle)
-- **Workers**: On-demand (1 pod per active session)
-- **Max Concurrent Workers**: Limited by rate limiting
+### Scaling Configuration
+- **Dispatcher**: Single replica (long-lived)
+- **Orchestrator**: Single replica (long-lived) 
+- **PostgreSQL**: StatefulSet with single replica
+- **Workers**: Simple deployment scaling (1 replica → 0 after 5min idle)
+- **Max Concurrent Workers**: Limited by rate limiting and queue processing
 - **Pod Resources**:
-  - CPU: 500m-1500m
-  - Memory: 1Gi-3Gi
+  - Dispatcher: CPU: 100m-500m, Memory: 256Mi-1Gi
+  - Orchestrator: CPU: 100m-1000m, Memory: 256Mi-2Gi
+  - Workers: CPU: 100m-1000m, Memory: 256Mi-2Gi
 
 ### Performance Optimizations
-1. **Repository Caching**: 5-minute TTL for repository metadata
-2. **Session Persistence**: Avoid re-cloning for same user
-3. **Spot Instances**: Workers prefer spot nodes for cost savings
-4. **Manual Cleanup**: Stale deployments cleaned up via script (automatic cleanup planned)
+1. **Queue-based Processing**: PostgreSQL/pgboss provides reliable job queuing
+2. **Repository Caching**: 5-minute TTL for repository metadata
+3. **Session Persistence**: Avoid re-cloning for same user
+4. **Deployment Scaling**: Workers scale to 0 automatically after 5min idle
+5. **Bot Isolation**: Separate queues per bot for multi-tenant isolation
 
 ## Security Considerations
 

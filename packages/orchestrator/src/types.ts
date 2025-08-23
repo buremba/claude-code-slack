@@ -162,7 +162,7 @@ export class OrchestratorError extends Error {
   static fromKubernetesError(error: any): OrchestratorError {
     return new OrchestratorError(
       ErrorCode.KUBERNETES_API_ERROR,
-      `Kubernetes API error: ${error.message}`,
+      `Kubernetes API error: ${error instanceof Error ? error.message : String(error)}`,
       { 
         status: error.statusCode,
         reason: error.body?.reason,
@@ -175,7 +175,7 @@ export class OrchestratorError extends Error {
   static fromDatabaseError(error: any): OrchestratorError {
     return new OrchestratorError(
       ErrorCode.DATABASE_CONNECTION_FAILED,
-      `Database error: ${error.message}`,
+      `Database error: ${error instanceof Error ? error.message : String(error)}`,
       { code: error.code, detail: error.detail },
       true
     );

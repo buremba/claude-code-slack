@@ -1,4 +1,4 @@
-import PgBoss from 'pgboss';
+import PgBoss from 'pg-boss';
 import { 
   OrchestratorConfig, 
   WorkerDeploymentRequest, 
@@ -39,10 +39,7 @@ export class QueueConsumer {
       this.isRunning = true;
 
       // Subscribe to direct message queue for initial worker deployment requests
-      await this.pgBoss.work('direct_message', {
-        teamSize: 5,
-        teamConcurrency: 2
-      }, this.handleDirectMessage.bind(this));
+      await this.pgBoss.work('direct_message', this.handleDirectMessage.bind(this));
 
       console.log('✅ Queue consumer started - listening for direct messages');
 
@@ -52,7 +49,7 @@ export class QueueConsumer {
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-        `Failed to start queue consumer: ${error.message}`,
+        `Failed to start queue consumer: ${error instanceof Error ? error.message : String(error)}`,
         { error },
         true
       );
@@ -68,7 +65,7 @@ export class QueueConsumer {
   /**
    * Handle direct message jobs - these trigger worker deployment creation
    */
-  private async handleDirectMessage(job: PgBoss.Job<WorkerDeploymentRequest>): Promise<void> {
+  private async handleDirectMessage(job: any): Promise<void> {
     const { data } = job;
     const jobId = job.id;
     
@@ -110,13 +107,13 @@ export class QueueConsumer {
         jobId, 
         'failed', 
         null, 
-        error.message
+        error instanceof Error ? error.message : String(error)
       );
 
       // Re-throw for pgboss retry handling
       throw new OrchestratorError(
         ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-        `Failed to process direct message job: ${error.message}`,
+        `Failed to process direct message job: ${error instanceof Error ? error.message : String(error)}`,
         { jobId, data, error },
         true
       );
@@ -150,7 +147,7 @@ export class QueueConsumer {
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-        `Failed to send job to user queue ${userQueueName}: ${error.message}`,
+        `Failed to send job to user queue ${userQueueName}: ${error instanceof Error ? error.message : String(error)}`,
         { userQueueName, data, error },
         true
       );
@@ -194,7 +191,7 @@ export class QueueConsumer {
       };
     } catch (error) {
       console.error('Failed to get queue stats:', error);
-      return { error: error.message };
+      return { error: error instanceof Error ? error.message : String(error) };
     }
   }
 

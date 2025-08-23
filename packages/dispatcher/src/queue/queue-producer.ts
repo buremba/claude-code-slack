@@ -131,7 +131,7 @@ export class QueueProducer {
         priority: options?.priority || 0,
         retryLimit: options?.retryLimit || 3,
         retryDelay: options?.retryDelay || 30,
-        expireInHours: options?.expireInHours || 24,
+        expireInHours: options?.expireInHours || 1,
         singletonKey: `deployment-${payload.userId}-${payload.threadId}-${payload.agentSessionId}`, // Prevent duplicates
       });
 
@@ -168,7 +168,7 @@ export class QueueProducer {
         priority: options?.priority || 10, // Higher priority for user queue messages
         retryLimit: options?.retryLimit || 3,
         retryDelay: options?.retryDelay || 30,
-        expireInHours: options?.expireInHours || 24,
+        expireInHours: options?.expireInHours || 1,
         singletonKey: `thread-${payload.userId}-${payload.threadId}-${payload.messageId}`, // Prevent duplicates
       });
 

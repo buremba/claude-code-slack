@@ -350,38 +350,13 @@ export class SlackEventHandlers {
       const initialResponse = await client.chat.postMessage({
         channel: context.channelId,
         thread_ts: threadTs,
-        text: "🚀 Starting Claude session...",
+        text: "🚀 Starting environment setup...",
       });
 
       // Determine if this is a new conversation or continuation
       const isNewConversation = !context.threadTs;
       
       if (isNewConversation) {
-        // Enqueue to direct_message queue (will create worker deployment)
-        const directPayload: DirectMessagePayload = {
-          botId: this.getBotId(),
-          userId: context.userId,
-          platform: "slack",
-          channelId: context.channelId,
-          messageId: context.messageTs,
-          threadId: threadTs,
-          messageText: userRequest,
-          githubUsername: username,
-          repositoryUrl: repository.repositoryUrl,
-          platformMetadata: {
-            teamId: context.teamId,
-            userDisplayName: context.userDisplayName,
-            slackResponseChannel: context.channelId,
-            slackResponseTs: initialResponse.ts,
-            originalMessageTs: context.messageTs,
-          },
-          claudeOptions: {
-            ...this.config.claude,
-            timeoutMinutes: this.config.sessionTimeoutMinutes.toString(),
-            resumeSessionId: existingClaudeSessionId,
-          },
-        };
-
         const deploymentPayload: WorkerDeploymentPayload = {
           userId: context.userId,
           botId: this.getBotId(),
@@ -395,7 +370,7 @@ export class SlackEventHandlers {
           platformMetadata: {
             teamId: context.teamId,
             userDisplayName: context.userDisplayName,
-            repositoryUrl: repositoryUrl,
+            repositoryUrl: repository.repositoryUrl,
             slackResponseChannel: context.channelId,
             slackResponseTs: initialResponse.ts,
             originalMessageTs: context.messageTs,
@@ -411,7 +386,7 @@ export class SlackEventHandlers {
         const jobId = await this.queueProducer.enqueueWorkerDeployment(deploymentPayload);
 
         logger.info(`Enqueued direct message job ${jobId} for session ${sessionKey}`);
-        threadSession.status = "enqueued";
+        threadSession.status = "pending";
         
       } else {
         // Enqueue to user-specific queue (worker should already exist)
@@ -427,7 +402,7 @@ export class SlackEventHandlers {
           platformMetadata: {
             teamId: context.teamId,
             userDisplayName: context.userDisplayName,
-            repositoryUrl: repositoryUrl,
+            repositoryUrl: repository.repositoryUrl,
             slackResponseChannel: context.channelId,
             slackResponseTs: initialResponse.ts,
             originalMessageTs: context.messageTs,
@@ -447,7 +422,7 @@ export class SlackEventHandlers {
         const jobId = await this.queueProducer.enqueueThreadMessage(threadPayload);
 
         logger.info(`Enqueued thread message job ${jobId} for session ${sessionKey}`);
-        threadSession.status = "enqueued";
+        threadSession.status = "pending";
       }
 
     } catch (error) {

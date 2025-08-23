@@ -33,7 +33,8 @@ awk -v slack_bot_token="$SLACK_BOT_TOKEN" \
     -v slack_signing_secret="$SLACK_SIGNING_SECRET" \
     -v slack_app_token="$SLACK_APP_TOKEN" \
     -v github_token="$GITHUB_TOKEN" \
-    -v claude_oauth_token="$CLAUDE_CODE_OAUTH_TOKEN" '
+    -v claude_oauth_token="$CLAUDE_CODE_OAUTH_TOKEN" \
+    -v postgresql_password="$POSTGRESQL_PASSWORD" '
 BEGIN {
     in_secrets = 0
     secrets_updated = 0
@@ -46,6 +47,7 @@ BEGIN {
     print "  slackAppToken: \"" slack_app_token "\""
     print "  githubToken: \"" github_token "\""
     print "  claudeCodeOAuthToken: \"" claude_oauth_token "\""
+    print "  postgresqlPassword: \"" postgresql_password "\""
     secrets_updated = 1
     next
 }

@@ -82,10 +82,7 @@ rules:
     verbs: ["get"]
     resourceNames: ["peerbot-secrets"]
   
-  # ConfigMaps listing with label selectors for message queuing
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["list", "patch"]
+  # ConfigMap permissions removed - now using PostgreSQL queues only
   
   # Self-monitoring for graceful shutdown - read-only access to own job
   - apiGroups: ["batch"]

@@ -84,7 +84,7 @@ export class DatabasePool {
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.USER_CREDENTIALS_CREATE_FAILED,
-        `Failed to create user credentials for ${userId}: ${error.message}`,
+        `Failed to create user credentials for ${userId}: ${error instanceof Error ? error.message : String(error)}`,
         { userId },
         true
       );
