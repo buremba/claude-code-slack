@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 
 import PgBoss from "pg-boss";
-import type { Pool } from "pg";
 import { ClaudeWorker } from "../claude-worker";
 import type { WorkerConfig } from "../types";
 import logger from "../logger";
@@ -36,47 +35,45 @@ export class WorkerQueueConsumer {
   private currentWorker: ClaudeWorker | null = null;
   private isProcessing = false;
   private userId: string;
+  private deploymentName: string;
   private targetThreadId?: string;
 
   constructor(
     connectionString: string,
     userId: string,
+    deploymentName: string,
     targetThreadId?: string
   ) {
     this.pgBoss = new PgBoss(connectionString);
     this.userId = userId;
+    this.deploymentName = deploymentName;
     this.targetThreadId = targetThreadId;
   }
 
   /**
-   * Start consuming messages from the user queue
-   * Worker listens to all messages but only processes assigned thread
+   * Start consuming messages from the thread-specific queue
+   * Worker listens to messages for its specific thread deployment
    */
   async start(): Promise<void> {
     try {
       await this.pgBoss.start();
       
-      // Generate user queue name - listens to all messages for this user
-      const userQueueName = this.getUserQueueName();
+      // Generate thread queue name - listens to messages for this deployment
+      const threadQueueName = this.getThreadQueueName();
       
-      // Register job handler for user queue messages
+      // Register job handler for thread queue messages
       await this.pgBoss.work(
-        userQueueName,
-        {
-          teamSize: 1, // Multiple workers can share the user queue
-          teamConcurrency: 1, // Process messages sequentially per worker
-        },
-        this.handleUserQueueMessage.bind(this)
+        threadQueueName,
+        async (job: any) => this.handleThreadMessage(job)
       );
 
       this.isRunning = true;
       logger.info(`✅ Worker queue consumer started for user ${this.userId}`);
+      logger.info(`🚀 Deployment: ${this.deploymentName}`);
       if (this.targetThreadId) {
         logger.info(`🎯 Targeting thread: ${this.targetThreadId}`);
-      } else {
-        logger.info(`🎯 Processing all threads for user`);
       }
-      logger.info(`📥 Listening to queue: ${userQueueName}`);
+      logger.info(`📥 Listening to queue: ${threadQueueName}`);
       
     } catch (error) {
       logger.error("Failed to start worker queue consumer:", error);
@@ -106,20 +103,59 @@ export class WorkerQueueConsumer {
   }
 
   /**
-   * Handle user queue message jobs with thread-specific routing
+   * Handle thread-specific message jobs
+   * Since worker listens to its own thread queue, all messages are for this thread
    */
-  private async handleUserQueueMessage(job: PgBoss.Job<ThreadMessagePayload>): Promise<void> {
-    const data = job.data;
-
-    // Check if this message is for our target thread (if specified)
-    if (this.targetThreadId && data.routingMetadata?.targetThreadId !== this.targetThreadId) {
-      logger.debug(`Skipping message for thread ${data.routingMetadata?.targetThreadId}, expecting ${this.targetThreadId}`);
-      return; // Skip this message - not for our thread
+  private async handleThreadMessage(job: any): Promise<void> {
+    let actualData;
+    
+    try {
+      logger.info('Received job structure:', { 
+        type: typeof job, 
+        keys: Object.keys(job || {}),
+        hasNumericKeys: Object.keys(job || {}).some(k => !isNaN(Number(k)))
+      });
+      
+      // Check if this is the PgBoss format (object with numeric keys)
+      if (typeof job === 'object' && job !== null) {
+        const keys = Object.keys(job);
+        const numericKeys = keys.filter(key => !isNaN(Number(key)));
+        
+        if (numericKeys.length > 0) {
+          // PgBoss passes jobs as an array, get the first element
+          const firstKey = numericKeys[0];
+          const firstJob = firstKey ? job[firstKey] : null;
+          
+          if (typeof firstJob === 'object' && firstJob !== null && firstJob.data) {
+            // This is the actual job object from PgBoss
+            actualData = firstJob.data;
+            logger.info(`Successfully extracted job data for job ${firstJob.id} from queue ${firstJob.name}`);
+          } else {
+            throw new Error('Invalid job format: expected job object with data field');
+          }
+        } else {
+          // Fallback - might be normal job format
+          actualData = job.data || job;
+        }
+      } else {
+        actualData = job;
+      }
+      
+      logger.info('Final extracted data:', { 
+        userId: actualData?.userId, 
+        threadId: actualData?.threadId, 
+        messageText: actualData?.messageText?.substring(0, 50)
+      });
+      
+    } catch (error) {
+      logger.error('Failed to parse job data:', error);
+      logger.error('Raw job structure:', JSON.stringify(job, null, 2).substring(0, 500));
+      throw new Error(`Invalid job data format: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    // Check if message is for our user
-    if (data.userId !== this.userId) {
-      logger.warn(`Received message for user ${data.userId}, but this worker is for user ${this.userId}`);
+    // Validate message is for our user (sanity check)
+    if (actualData.userId !== this.userId) {
+      logger.warn(`Received message for user ${actualData.userId}, but this worker is for user ${this.userId}`);
       return; // Skip this message - wrong user
     }
 
@@ -129,28 +165,29 @@ export class WorkerQueueConsumer {
     }
 
     this.isProcessing = true;
+    const jobId = 'worker-processed'; // Can't extract ID from serialized format
 
     try {
-      logger.info(`Processing user queue message job ${job.id} for user ${data.userId}, thread ${data.threadId}`);
+      logger.info(`Processing thread message job ${jobId} for user ${actualData.userId}, thread ${actualData.threadId}`);
 
       // User context should be set by orchestrator as environment variable  
       // The DATABASE_URL should already contain user-specific credentials
       if (!process.env.USER_ID) {
-        logger.warn(`USER_ID not set in environment, using userId from payload: ${data.userId}`);
-        process.env.USER_ID = data.userId;
+        logger.warn(`USER_ID not set in environment, using userId from payload: ${actualData.userId}`);
+        process.env.USER_ID = actualData.userId;
       }
 
       // Convert queue payload to WorkerConfig format
-      const workerConfig = this.payloadToWorkerConfig(data);
+      const workerConfig = this.payloadToWorkerConfig(actualData);
 
       // Create and execute worker
       this.currentWorker = new ClaudeWorker(workerConfig);
       await this.currentWorker.execute();
       
-      logger.info(`✅ Successfully processed user queue message job ${job.id}`);
+      logger.info(`✅ Successfully processed user queue message job ${jobId}`);
 
     } catch (error) {
-      logger.error(`❌ Failed to process user queue message job ${job.id}:`, error);
+      logger.error(`❌ Failed to process user queue message job ${jobId}:`, error);
       
       // Re-throw to let pgboss handle retry logic
       throw error;
@@ -171,13 +208,11 @@ export class WorkerQueueConsumer {
   }
 
   /**
-   * Generate user-specific queue name
-   * Workers listen to all messages for their assigned user
+   * Generate thread-specific queue name for this deployment
+   * Workers listen to messages for their specific thread deployment
    */
-  private getUserQueueName(): string {
-    // Use user ID to create user-specific queue name
-    const sanitizedUserId = this.userId.replace(/[^a-z0-9]/gi, "_");
-    return `user_${sanitizedUserId}_queue`;
+  private getThreadQueueName(): string {
+    return `thread_message_${this.deploymentName}`;
   }
 
   /**
@@ -197,12 +232,12 @@ export class WorkerQueueConsumer {
       slackResponseChannel: platformMetadata.slackResponseChannel || payload.channelId,
       slackResponseTs: platformMetadata.slackResponseTs || payload.messageId,
       claudeOptions: JSON.stringify(payload.claudeOptions),
-      resumeSessionId: payload.agentSessionId,
+      resumeSessionId: undefined, // Don't resume - each message starts fresh
       slack: {
-        token: process.env.SLACK_BOT_TOKEN!,
-        refreshToken: process.env.SLACK_REFRESH_TOKEN,
-        clientId: process.env.SLACK_CLIENT_ID,
-        clientSecret: process.env.SLACK_CLIENT_SECRET,
+        token: "", // No longer needed - queue integration handles communication
+        refreshToken: undefined,
+        clientId: undefined,
+        clientSecret: undefined,
       },
       workspace: {
         baseDirectory: "/workspace",
@@ -233,7 +268,7 @@ export class WorkerQueueConsumer {
       isProcessing: this.isProcessing,
       userId: this.userId,
       targetThreadId: this.targetThreadId,
-      queueName: this.getUserQueueName(),
+      queueName: this.getThreadQueueName(),
     };
   }
 }

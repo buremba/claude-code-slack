@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import PgBoss from "pg-boss";
-import { Pool, PoolClient } from "pg";
+import { Pool } from "pg";
 import logger from "../logger";
 
 /**
@@ -50,7 +50,7 @@ export interface ThreadMessagePayload {
 
 export class QueueProducer {
   private pgBoss: PgBoss;
-  private pool: Pool;
+  private pool?: Pool;
   private isConnected = false;
 
   constructor(connectionString: string, databaseConfig?: {
@@ -86,6 +86,11 @@ export class QueueProducer {
     try {
       await this.pgBoss.start();
       this.isConnected = true;
+      
+      // Create the messages queue if it doesn't exist
+      await this.pgBoss.createQueue('messages');
+      logger.info("✅ Created/verified messages queue");
+      
       logger.info("✅ Queue producer started successfully");
     } catch (error) {
       logger.error("Failed to start queue producer:", error);
@@ -111,7 +116,46 @@ export class QueueProducer {
   }
 
   /**
+   * Enqueue any message (direct or thread) to the single 'messages' queue
+   * Orchestrator will determine if it needs to create a deployment or route to existing thread
+   */
+  async enqueueMessage(
+    payload: WorkerDeploymentPayload | ThreadMessagePayload,
+    options?: {
+      priority?: number;
+      retryLimit?: number;
+      retryDelay?: number;
+      expireInHours?: number;
+    }
+  ): Promise<string> {
+    if (!this.isConnected) {
+      throw new Error("Queue producer is not connected");
+    }
+
+    try {
+      // All messages go to the single 'messages' queue
+      const jobId = await this.pgBoss.send('messages', payload, {
+        priority: options?.priority || 0,
+        retryLimit: options?.retryLimit || 3,
+        retryDelay: options?.retryDelay || 30,
+        expireInHours: options?.expireInHours || 1,
+        singletonKey: `message-${payload.userId}-${payload.threadId}-${payload.messageId || Date.now()}`, // Prevent duplicates
+      });
+
+      // Debug: Check what send() actually returns
+      logger.info(`pgBoss.send() returned: ${JSON.stringify(jobId)}, type: ${typeof jobId}`);
+      logger.info(`Enqueued message job ${jobId} for user ${payload.userId}, thread ${payload.threadId}`);
+      return jobId || 'job-sent';
+
+    } catch (error) {
+      logger.error(`Failed to enqueue message for user ${payload.userId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Enqueue a worker deployment request (for new conversations/threads)
+   * @deprecated Use enqueueMessage instead
    */
   async enqueueWorkerDeployment(
     payload: WorkerDeploymentPayload,
@@ -122,30 +166,12 @@ export class QueueProducer {
       expireInHours?: number;
     }
   ): Promise<string> {
-    if (!this.isConnected) {
-      throw new Error("Queue producer is not connected");
-    }
-
-    try {
-      const jobId = await this.pgBoss.send('direct_message', payload, {
-        priority: options?.priority || 0,
-        retryLimit: options?.retryLimit || 3,
-        retryDelay: options?.retryDelay || 30,
-        expireInHours: options?.expireInHours || 1,
-        singletonKey: `deployment-${payload.userId}-${payload.threadId}-${payload.agentSessionId}`, // Prevent duplicates
-      });
-
-      logger.info(`Enqueued worker deployment job ${jobId} for user ${payload.userId}, thread ${payload.threadId}`);
-      return jobId;
-
-    } catch (error) {
-      logger.error(`Failed to enqueue worker deployment for user ${payload.userId}:`, error);
-      throw error;
-    }
+    return this.enqueueMessage(payload, options);
   }
 
   /**
-   * Enqueue a thread message job to user-specific queue
+   * Enqueue a thread message job
+   * @deprecated Use enqueueMessage instead
    */
   async enqueueThreadMessage(
     payload: ThreadMessagePayload,
@@ -156,38 +182,9 @@ export class QueueProducer {
       expireInHours?: number;
     }
   ): Promise<string> {
-    if (!this.isConnected) {
-      throw new Error("Queue producer is not connected");
-    }
-
-    try {
-      // Send to user-specific queue
-      const userQueueName = this.getUserQueueName(payload.userId);
-      
-      const jobId = await this.pgBoss.send(userQueueName, payload, {
-        priority: options?.priority || 10, // Higher priority for user queue messages
-        retryLimit: options?.retryLimit || 3,
-        retryDelay: options?.retryDelay || 30,
-        expireInHours: options?.expireInHours || 1,
-        singletonKey: `thread-${payload.userId}-${payload.threadId}-${payload.messageId}`, // Prevent duplicates
-      });
-
-      logger.info(`Enqueued thread message job ${jobId} to user queue ${userQueueName}, thread ${payload.threadId}`);
-      return jobId;
-
-    } catch (error) {
-      logger.error(`Failed to enqueue thread message for user ${payload.userId}:`, error);
-      throw error;
-    }
+    return this.enqueueMessage(payload, options);
   }
 
-  /**
-   * Get user-specific queue name
-   */
-  private getUserQueueName(userId: string): string {
-    const sanitizedUserId = userId.replace(/[^a-z0-9]/gi, "_");
-    return `user_${sanitizedUserId}_queue`;
-  }
 
   /**
    * Execute a query with user context for RLS
@@ -254,10 +251,10 @@ export class QueueProducer {
     try {
       const stats = await this.pgBoss.getQueueSize(queueName);
       return {
-        waiting: stats.waiting,
-        active: stats.active,
-        completed: stats.completed,
-        failed: stats.failed
+        waiting: typeof stats === 'number' ? stats : 0,
+        active: 0, // PgBoss.getQueueSize only returns waiting count
+        completed: 0,
+        failed: 0
       };
     } catch (error) {
       logger.error(`Failed to get queue stats for ${queueName}:`, error);
@@ -270,7 +267,7 @@ export class QueueProducer {
    */
   async cancelJob(jobId: string): Promise<void> {
     try {
-      await this.pgBoss.cancel(jobId);
+      await this.pgBoss.cancel('messages', jobId);  // PgBoss.cancel requires queue name
       logger.info(`Cancelled job ${jobId}`);
     } catch (error) {
       logger.error(`Failed to cancel job ${jobId}:`, error);
@@ -283,7 +280,7 @@ export class QueueProducer {
    */
   async getJobStatus(jobId: string): Promise<any> {
     try {
-      const job = await this.pgBoss.getJobById(jobId);
+      const job = await this.pgBoss.getJobById('messages', jobId);  // PgBoss.getJobById requires queue name
       return job;
     } catch (error) {
       logger.error(`Failed to get job status for ${jobId}:`, error);

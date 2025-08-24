@@ -32,16 +32,24 @@ export class QueuePersistentClaudeWorker {
     this.config = this.loadConfigFromEnv();
     this.timeoutMinutes = parseInt(process.env.SESSION_TIMEOUT_MINUTES || "30");
     
-    // Initialize queue consumer with user-based routing
+    // Get deployment name from environment
+    const deploymentName = process.env.DEPLOYMENT_NAME;
+    if (!deploymentName) {
+      throw new Error('DEPLOYMENT_NAME environment variable is required');
+    }
+    
+    // Initialize queue consumer with thread-specific routing
     const connectionString = this.buildConnectionString();
     this.queueConsumer = new WorkerQueueConsumer(
       connectionString,
       this.userId,
+      deploymentName,
       this.targetThreadId
     );
     
     logger.info(`🚀 Starting Queue-based Persistent Claude Worker`);
     logger.info(`- User ID: ${this.userId}`);
+    logger.info(`- Deployment: ${deploymentName}`);
     if (this.targetThreadId) {
       logger.info(`- Target Thread: ${this.targetThreadId}`);
     }
@@ -49,6 +57,13 @@ export class QueuePersistentClaudeWorker {
   }
 
   private buildConnectionString(): string {
+    // Use the pre-built connection string from environment if available
+    const connectionString = process.env.POSTGRESQL_CONNECTION_STRING || process.env.DATABASE_URL;
+    if (connectionString) {
+      return connectionString;
+    }
+    
+    // Fallback to building from individual components
     const host = process.env.DATABASE_HOST || "localhost";
     const port = process.env.DATABASE_PORT || "5432";
     const database = process.env.DATABASE_NAME || "peerbot";
@@ -224,7 +239,9 @@ export class QueuePersistentClaudeWorker {
 
 /**
  * Main entry point for queue-based persistent worker
+ * @internal
  */
+// @ts-ignore - Called from index.ts when WORKER_MODE is 'queue'
 async function main() {
   try {
     // Get user ID from environment - required for worker
@@ -262,8 +279,5 @@ async function main() {
 }
 
 // Only start if this file is run directly
-if (import.meta.main) {
-  main();
-}
-
-export { QueuePersistentClaudeWorker };
+// Note: import.meta.main is not supported in TypeScript with current config
+// The main() function is called from index.ts instead

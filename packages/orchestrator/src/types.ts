@@ -128,6 +128,7 @@ export interface SimpleDeployment {
           persistentVolumeClaim?: {
             claimName: string;
           };
+          emptyDir?: {};
         }>;
       };
     };
@@ -143,6 +144,7 @@ export enum ErrorCode {
   QUEUE_JOB_PROCESSING_FAILED = 'QUEUE_JOB_PROCESSING_FAILED',
   USER_CREDENTIALS_CREATE_FAILED = 'USER_CREDENTIALS_CREATE_FAILED',
   SECRET_CREATE_FAILED = 'SECRET_CREATE_FAILED',
+  PVC_CREATE_FAILED = 'PVC_CREATE_FAILED',
   INVALID_CONFIGURATION = 'INVALID_CONFIGURATION',
   THREAD_DEPLOYMENT_NOT_FOUND = 'THREAD_DEPLOYMENT_NOT_FOUND',
   USER_QUEUE_NOT_FOUND = 'USER_QUEUE_NOT_FOUND'

@@ -2,6 +2,7 @@
   "name": "@claude-code-slack/dispatcher",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "Slack dispatcher service that routes messages to Kubernetes worker Jobs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,16 +17,18 @@
     "@claude-code-slack/core-runner": "workspace:*",
     "@kubernetes/client-node": "^1.0.0",
     "@octokit/rest": "^21.1.1",
-    "@slack/bolt": "^3.19.0",
+    "@slack/bolt": "^3.22.0",
     "@slack/web-api": "^7.6.0",
+    "marked": "^12.0.0",
     "node-fetch": "^3.3.2",
-    "winston": "^3.17.0",
-    "zod": "^3.24.4",
+    "pg": "^8.11.3",
     "pg-boss": "^10.0.2",
-    "pg": "^8.11.3"
+    "winston": "^3.17.0",
+    "zod": "^3.24.4"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/marked": "^6.0.0",
     "typescript": "^5.8.3"
   }
 }

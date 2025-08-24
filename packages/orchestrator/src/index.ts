@@ -18,7 +18,7 @@ class PeerbotOrchestrator {
     this.config = config;
     this.dbPool = new DatabasePool(config.database);
     this.deploymentManager = new DeploymentManager(config, this.dbPool);
-    this.queueConsumer = new QueueConsumer(config, this.deploymentManager, this.dbPool);
+    this.queueConsumer = new QueueConsumer(config, this.deploymentManager);
   }
 
   async start(): Promise<void> {
@@ -129,6 +129,65 @@ class PeerbotOrchestrator {
         } catch (error) {
           res.statusCode = 500;
           res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        }
+        
+      } else if (req.method === 'POST' && url.pathname.startsWith('/scale/')) {
+        // Scale deployment endpoint: POST /scale/{deploymentName}/{replicas}
+        const pathParts = url.pathname.split('/');
+        if (pathParts.length === 4 && pathParts[1] === 'scale') {
+          const deploymentName = pathParts[2];
+          const replicas = parseInt(pathParts[3]);
+          
+          if (isNaN(replicas) || replicas < 0) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ error: 'Invalid replica count' }));
+            return;
+          }
+
+          try {
+            // Read request body for metadata
+            let body = '';
+            req.on('data', (chunk: any) => {
+              body += chunk.toString();
+            });
+            
+            req.on('end', async () => {
+              try {
+                const metadata = body ? JSON.parse(body) : {};
+                console.log(`Scaling deployment ${deploymentName} to ${replicas} replicas (requested by: ${metadata.requestedBy || 'unknown'})`);
+                
+                // Scale the deployment using deployment manager
+                await this.deploymentManager.scaleDeployment(deploymentName, replicas);
+                
+                const result = {
+                  service: 'peerbot-orchestrator',
+                  action: 'scale',
+                  deployment: deploymentName,
+                  replicas: replicas,
+                  timestamp: new Date().toISOString(),
+                  requestedBy: metadata.requestedBy || 'unknown',
+                  reason: metadata.reason || 'Manual scaling request'
+                };
+                
+                res.statusCode = 200;
+                res.end(JSON.stringify(result));
+              } catch (error) {
+                console.error(`Failed to scale deployment ${deploymentName}:`, error);
+                res.statusCode = 500;
+                res.end(JSON.stringify({ 
+                  error: error instanceof Error ? error.message : String(error),
+                  deployment: deploymentName,
+                  requestedReplicas: replicas
+                }));
+              }
+            });
+          } catch (error) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ error: 'Failed to read request body' }));
+          }
+        } else {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'Invalid scale endpoint format. Use POST /scale/{deploymentName}/{replicas}' }));
         }
         
       } else {

@@ -1,5 +1,5 @@
 # Dockerfile for Orchestrator
-FROM oven/bun:1.1.0
+FROM oven/bun:1.2.9
 
 # Install required packages for Kubernetes client and curl for health checks
 RUN apt-get update && apt-get install -y \

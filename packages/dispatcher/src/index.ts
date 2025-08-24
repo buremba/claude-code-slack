@@ -5,6 +5,7 @@ import { join } from 'path';
 import { App, ExpressReceiver, LogLevel } from "@slack/bolt";
 import { SlackEventHandlers } from "./slack/event-handlers";
 import { QueueProducer } from "./queue/queue-producer";
+import { ThreadResponseConsumer } from "./queue/thread-response-consumer";
 import { GitHubRepositoryManager } from "./github/repository-manager";
 import { setupHealthEndpoints } from "./simple-http";
 import type { DispatcherConfig } from "./types";
@@ -13,6 +14,7 @@ import logger from "./logger";
 export class SlackDispatcher {
   private app: App;
   private queueProducer: QueueProducer;
+  private threadResponseConsumer: ThreadResponseConsumer;
   private repoManager: GitHubRepositoryManager;
   private config: DispatcherConfig;
 
@@ -76,6 +78,7 @@ export class SlackDispatcher {
       ssl: process.env.DATABASE_SSL === 'true'
     };
     this.queueProducer = new QueueProducer(config.queues.connectionString, databaseConfig);
+    this.threadResponseConsumer = new ThreadResponseConsumer(config.queues.connectionString, config.slack.token);
     this.repoManager = new GitHubRepositoryManager(config.github);
 
     this.setupErrorHandling();
@@ -103,6 +106,10 @@ export class SlackDispatcher {
       // Start queue producer
       await this.queueProducer.start();
       logger.info("✅ Queue producer started");
+      
+      // Start thread response consumer
+      await this.threadResponseConsumer.start();
+      logger.info("✅ Thread response consumer started");
       
       // Get bot's own user ID and bot ID dynamically before starting
       await this.initializeBotInfo(this.config);
@@ -153,9 +160,14 @@ export class SlackDispatcher {
         });
       } else {
         // In socket mode, add connection event handlers first
+        logger.info("Socket Mode debugging - checking client availability");
+        logger.info("App receiver type:", (this.app as any).receiver?.constructor.name);
+        logger.info("Socket Mode client exists:", !!(this.app as any).receiver?.client);
+        
         const socketModeClient = (this.app as any).receiver?.client;
         if (socketModeClient) {
           logger.info("Setting up Socket Mode event handlers...");
+          logger.info("Socket Mode client type:", socketModeClient.constructor.name);
           
           socketModeClient.on('slack_event', (event: any, _body: any) => {
             logger.info('Socket Mode event received:', event.type);
@@ -186,10 +198,23 @@ export class SlackDispatcher {
         
         // In socket mode, just start with timeout
         logger.info("Starting Slack app in Socket Mode...");
+        logger.info("Config that was used for App constructor:", {
+          socketMode: this.config.slack.socketMode,
+          appTokenExists: !!this.config.slack.appToken,
+          tokenExists: !!this.config.slack.token,
+          signingSecretExists: !!this.config.slack.signingSecret,
+        });
+        
         try {
+          logger.info("Calling app.start()...");
           const startPromise = this.app.start();
+          logger.info("app.start() called, waiting for resolution...");
+          
           const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => reject(new Error("Socket Mode start timeout after 60 seconds")), 60000);
+            setTimeout(() => {
+              logger.error("Socket Mode start timeout reached after 60 seconds");
+              reject(new Error("Socket Mode start timeout after 60 seconds"));
+            }, 60000);
           });
           
           await Promise.race([startPromise, timeoutPromise]);
@@ -223,6 +248,7 @@ export class SlackDispatcher {
       await this.app.stop();
       
       await this.queueProducer.stop();
+      await this.threadResponseConsumer.stop();
       
       logger.info("Slack dispatcher stopped");
     } catch (error) {
@@ -365,6 +391,12 @@ async function main() {
     const botToken = process.env.SLACK_BOT_TOKEN;
 
     // Load configuration from environment
+    logger.info("Environment variables debug:", {
+      botToken: botToken?.substring(0, 10) + '...',
+      appToken: process.env.SLACK_APP_TOKEN?.substring(0, 10) + '...',
+      signingSecret: process.env.SLACK_SIGNING_SECRET?.substring(0, 10) + '...',
+    });
+    
     const config: DispatcherConfig = {
       slack: {
         token: botToken!,
@@ -397,6 +429,13 @@ async function main() {
         expireInHours: parseInt(process.env.PGBOSS_EXPIRE_HOURS || "24"),
       },
     };
+
+    logger.info("Final config debug:", {
+      slackToken: config.slack.token?.substring(0, 10) + '...',
+      slackAppToken: config.slack.appToken?.substring(0, 10) + '...',
+      slackSigningSecret: config.slack.signingSecret?.substring(0, 10) + '...',
+      socketMode: config.slack.socketMode,
+    });
 
     // Validate required configuration
     if (!config.slack.token) {

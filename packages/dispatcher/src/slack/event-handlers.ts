@@ -168,6 +168,12 @@ export class SlackEventHandlers {
           return;
         }
         
+        // Handle blockkit form modal submissions
+        if (view.callback_id === 'blockkit_form_modal') {
+          await this.handleBlockkitFormSubmission(userId, view, client);
+          return;
+        }
+        
         const channelId = metadata.channel_id;
         const threadTs = metadata.thread_ts;
         const userInput = this.extractViewInputs(view.state.values);
@@ -601,11 +607,146 @@ export class SlackEventHandlers {
         break;
 
       default:
+        // Handle blockkit form button clicks
+        if (actionId.startsWith("blockkit_form_")) {
+          await this.handleBlockkitForm(actionId, userId, channelId, messageTs, body, client);
+        }
+        // Handle stop worker button clicks
+        else if (actionId.startsWith("stop_worker_")) {
+          const deploymentName = actionId.replace("stop_worker_", "");
+          await this.handleStopWorker(deploymentName, userId, channelId, messageTs, client);
+        } else {
+          await client.chat.postEphemeral({
+            channel: channelId,
+            user: userId,
+            text: `Unsupported action: ${actionId}`,
+          });
+        }
+    }
+  }
+
+  /**
+   * Handle blockkit form button clicks
+   * Opens a modal with the blockkit form content
+   */
+  private async handleBlockkitForm(
+    actionId: string,
+    userId: string,
+    channelId: string,
+    messageTs: string,
+    body: any,
+    client: any
+  ): Promise<void> {
+    logger.info(`Handling blockkit form: ${actionId}`);
+
+    try {
+      // Extract the blocks from the button's value
+      const action = (body as any).actions?.[0];
+      if (!action?.value) {
+        throw new Error("No form data found in button");
+      }
+
+      const formData = JSON.parse(action.value);
+      const blocks = formData.blocks || [];
+
+      if (blocks.length === 0) {
+        throw new Error("No blocks found in form data");
+      }
+
+      // Create modal with the blockkit form
+      await client.views.open({
+        trigger_id: body.trigger_id,
+        view: {
+          type: "modal",
+          callback_id: "blockkit_form_modal",
+          private_metadata: JSON.stringify({
+            channel_id: channelId,
+            thread_ts: messageTs,
+            action_id: actionId,
+            button_text: action.text?.text || "Form"
+          }),
+          title: { type: "plain_text", text: action.text?.text || "Form" },
+          submit: { type: "plain_text", text: "Submit" },
+          close: { type: "plain_text", text: "Cancel" },
+          blocks: blocks
+        },
+      });
+
+    } catch (error) {
+      logger.error(`Failed to handle blockkit form ${actionId}:`, error);
+      
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: `❌ Failed to open form: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      });
+    }
+  }
+
+  /**
+   * Handle stop worker button clicks
+   * Scales the deployment to 0 to stop the Claude worker
+   */
+  private async handleStopWorker(
+    deploymentName: string,
+    userId: string,
+    channelId: string,
+    messageTs: string,
+    client: any
+  ): Promise<void> {
+    logger.info(`Handling stop worker request for deployment: ${deploymentName}`);
+
+    try {
+      // Make API call to orchestrator to scale deployment to 0
+      const orchestratorUrl = process.env.ORCHESTRATOR_URL || 'http://peerbot-orchestrator:8080';
+      const response = await fetch(`${orchestratorUrl}/scale/${deploymentName}/0`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          requestedBy: userId,
+          reason: 'User requested stop via Slack button'
+        })
+      });
+
+      if (response.ok) {
+        // Success - notify user
         await client.chat.postEphemeral({
           channel: channelId,
           user: userId,
-          text: `Unsupported action: ${actionId}`,
+          text: `✅ Claude worker stopped successfully. The deployment "${deploymentName}" has been scaled to 0.`,
         });
+
+        // Update the original message to remove the stop button
+        await client.chat.update({
+          channel: channelId,
+          ts: messageTs,
+          text: "Claude worker has been stopped by user request.",
+          blocks: [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "🛑 *Claude worker stopped by user request*"
+              }
+            }
+          ]
+        });
+
+      } else {
+        const errorText = await response.text();
+        throw new Error(`Orchestrator responded with ${response.status}: ${errorText}`);
+      }
+
+    } catch (error) {
+      logger.error(`Failed to stop worker for deployment ${deploymentName}:`, error);
+      
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: `❌ Failed to stop Claude worker: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      });
     }
   }
 
@@ -622,6 +763,83 @@ export class SlackEventHandlers {
     };
 
     await client.views.publish({ user_id: userId, view: homeView });
+  }
+
+  private async handleBlockkitFormSubmission(
+    userId: string,
+    view: any,
+    client: any
+  ): Promise<void> {
+    logger.info(`Handling blockkit form submission for user: ${userId}`);
+
+    const metadata = view.private_metadata ? JSON.parse(view.private_metadata) : {};
+    const channelId = metadata.channel_id;
+    const threadTs = metadata.thread_ts;
+    const buttonText = metadata.button_text || 'Form';
+    
+    if (!channelId || !threadTs) {
+      logger.error("Missing channel or thread information in blockkit form submission");
+      return;
+    }
+
+    const userInput = this.extractViewInputs(view.state.values);
+    
+    if (!userInput.trim()) {
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: "Please fill out the form before submitting.",
+      });
+      return;
+    }
+
+    try {
+      const formattedInput = `> 📝 *Form submitted from "${buttonText}" button*\n\n${userInput}`;
+      
+      const inputMessage = await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        text: formattedInput,
+        blocks: [
+          {
+            type: "context",
+            elements: [
+              {
+                type: "mrkdwn",
+                text: `<@${userId}> submitted form from "${buttonText}" button`
+              }
+            ]
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: userInput
+            }
+          }
+        ]
+      });
+      
+      const context = {
+        channelId,
+        userId,
+        userDisplayName: metadata.user_display_name || 'Unknown User',
+        teamId: metadata.team_id || '',
+        messageTs: inputMessage.ts as string,
+        threadTs: threadTs,
+        text: userInput,
+      };
+      
+      await this.handleUserRequest(context, userInput, client);
+      
+    } catch (error) {
+      logger.error(`Failed to handle blockkit form submission:`, error);
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: `❌ Failed to process form submission: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      });
+    }
   }
 
   private async handleRepositoryOverrideSubmission(
@@ -647,10 +865,8 @@ export class SlackEventHandlers {
 
     const username = await this.getOrCreateUserMapping(userId, client);
     
-    // Save to database instead of just memory cache
+    // Update memory cache
     try {
-      await this.saveUserRepositoryUrl(username, userId, repoUrl);
-      
       // Also update memory cache for immediate use
       this.repositoryCache.set(username, {
         repository: { repositoryUrl: repoUrl },
@@ -677,14 +893,37 @@ export class SlackEventHandlers {
 
   private extractViewInputs(stateValues: any): string {
     const inputs: string[] = [];
-    for (const block of Object.values(stateValues || {})) {
-      for (const action of Object.values(block as any)) {
-        const value =
-          (action as any).value ||
-          (action as any).selected_option?.value ||
-          "";
-        if (value) {
-          inputs.push(value);
+    for (const [blockId, block] of Object.entries(stateValues || {})) {
+      for (const [actionId, action] of Object.entries(block as any)) {
+        let value = "";
+        
+        // Handle different types of Slack form inputs
+        if ((action as any).value) {
+          value = (action as any).value;
+        } else if ((action as any).selected_option?.value) {
+          value = (action as any).selected_option.value;
+        } else if ((action as any).selected_options) {
+          // Multi-select
+          const options = (action as any).selected_options;
+          value = options.map((opt: any) => opt.value).join(", ");
+        } else if ((action as any).selected_date) {
+          value = (action as any).selected_date;
+        } else if ((action as any).selected_time) {
+          value = (action as any).selected_time;
+        }
+        
+        if (value && value.toString().trim()) {
+          // Use actionId as label if available, otherwise use blockId
+          const label = actionId || blockId;
+          // Convert snake_case or camelCase to readable format
+          const readableLabel = label
+            .replace(/[_-]/g, ' ')
+            .replace(/([a-z])([A-Z])/g, '$1 $2')
+            .split(' ')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(' ');
+          
+          inputs.push(`**${readableLabel}:** ${value}`);
         }
       }
     }

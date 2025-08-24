@@ -20,7 +20,8 @@ export class SlackIntegration {
   private updateQueue: string[] = [];
   private isProcessingQueue = false;
   private currentTodos: TodoItem[] = []; // Store the current todo list
-  private hasNotifiedSlackError = false; // Track if we've already notified about Slack errors
+  private showStopButton = false; // Track whether to show the stop button
+  private deploymentName?: string; // Deployment name for the stop button
 
   constructor(config: SlackConfig & { responseChannel?: string; responseTs?: string }) {
     
@@ -34,6 +35,9 @@ export class SlackIntegration {
     // Get response location from config or environment - prioritize INITIAL_ vars
     this.responseChannel = config.responseChannel || process.env.INITIAL_SLACK_RESPONSE_CHANNEL || process.env.SLACK_RESPONSE_CHANNEL!;
     this.responseTs = config.responseTs || process.env.INITIAL_SLACK_RESPONSE_TS || process.env.SLACK_RESPONSE_TS!;
+    
+    // Get deployment name from environment for stop button
+    this.deploymentName = process.env.DEPLOYMENT_NAME;
     
     // Validate required values - fail fast if missing or empty
     if (!this.responseChannel || !this.responseTs || this.responseChannel.trim() === '' || this.responseTs.trim() === '') {
@@ -75,12 +79,7 @@ export class SlackIntegration {
 
     } catch (error) {
       logger.error("Failed to update Slack progress:", error);
-      
-      // If this is the first Slack error, try curl fallback to notify the user
-      if (!this.hasNotifiedSlackError) {
-        this.hasNotifiedSlackError = true;
-        this.trySlackFallback("❌ **Slack Integration Error**\\n\\nUnable to update progress messages. This is likely a configuration issue with channel/timestamp values.");
-      }
+    
       
       // Don't throw - worker should continue even if Slack updates fail
     }
@@ -184,6 +183,12 @@ export class SlackIntegration {
             text: slackMessage.text
           }
         });
+      }
+      
+      // Add stop button if enabled
+      const stopButtonBlock = this.createStopButtonBlock();
+      if (stopButtonBlock) {
+        blocks.push(stopButtonBlock);
       }
       
       const updateOptions: any = {
@@ -446,41 +451,72 @@ export class SlackIntegration {
   }
 
   /**
-   * Try to post error message using curl when regular Slack integration fails
+   * Show stop button in Slack messages
+   * Called when Claude worker starts processing
    */
-  private trySlackFallback(errorMessage: string): void {
-    try {
-      const slackToken = process.env.SLACK_BOT_TOKEN;
-      const channel = process.env.INITIAL_SLACK_RESPONSE_CHANNEL;
-      const ts = process.env.INITIAL_SLACK_RESPONSE_TS;
-      
-      if (slackToken && channel && ts) {
-        // Use shell command with curl to post error message
-        const { execSync } = require("node:child_process");
-        const curlCommand = `curl -X POST https://slack.com/api/chat.update \\
-          -H "Authorization: Bearer ${slackToken}" \\
-          -H "Content-Type: application/json" \\
-          -d '{
-            "channel": "${channel}",
-            "ts": "${ts}",
-            "text": "${errorMessage}"
-          }' 2>/dev/null`;
-        
-        execSync(curlCommand);
-        logger.info("Posted error message to Slack via curl fallback");
-      } else {
-        logger.error("Cannot use Slack fallback - missing environment variables");
-        logger.error(`Token: ${!!slackToken}, Channel: ${channel}, TS: ${ts}`);
-      }
-    } catch (curlError) {
-      logger.error("Slack curl fallback also failed:", curlError);
+  showStopButton(): void {
+    this.showStopButton = true;
+    logger.info("Stop button enabled for deployment:", this.deploymentName);
+  }
+
+  /**
+   * Hide stop button from Slack messages
+   * Called when Claude worker finishes or times out
+   */
+  hideStopButton(): void {
+    this.showStopButton = false;
+    logger.info("Stop button disabled for deployment:", this.deploymentName);
+  }
+
+  /**
+   * Create stop button block for Slack message
+   */
+  private createStopButtonBlock(): any {
+    if (!this.showStopButton || !this.deploymentName) {
+      return null;
     }
+
+    return {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "🛑 Stop"
+          },
+          action_id: `stop_worker_${this.deploymentName}`,
+          style: "danger",
+          confirm: {
+            title: {
+              type: "plain_text",
+              text: "Stop Claude Worker"
+            },
+            text: {
+              type: "plain_text",
+              text: "Are you sure you want to stop the Claude worker? This will end the current session."
+            },
+            confirm: {
+              type: "plain_text",
+              text: "Stop"
+            },
+            deny: {
+              type: "plain_text",
+              text: "Cancel"
+            }
+          }
+        }
+      ]
+    };
   }
 
   /**
    * Cleanup Slack integration
    */
   cleanup(): void {
+    // Hide stop button before cleanup
+    this.hideStopButton();
+    
     // Clear any pending updates
     this.updateQueue = [];
     this.isProcessingQueue = false;

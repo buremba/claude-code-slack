@@ -82,8 +82,8 @@ async function waitForBotResponse(channel, afterTimestamp, timeout = 30000) {
   return null;
 }
 
-async function checkForReaction(channel, timestamp, reactionName, timeout = 30000) {
-  console.log(`⏳ Checking for ${reactionName} reaction...`);
+async function checkForAnyReaction(channel, timestamp, timeout = 10000) {
+  console.log('⏳ Checking for any reaction (cog=processing, checkmark=success)...');
   const startTime = Date.now();
   
   while (Date.now() - startTime < timeout) {
@@ -94,8 +94,40 @@ async function checkForReaction(channel, timestamp, reactionName, timeout = 3000
       });
       
       if (result.message && result.message.reactions) {
-        const reaction = result.message.reactions.find(r => r.name === reactionName);
-        if (reaction) {
+        const cogReaction = result.message.reactions.find(r => r.name === 'gear');
+        const checkmarkReaction = result.message.reactions.find(r => r.name === 'white_check_mark');
+        
+        if (checkmarkReaction) {
+          return 'success';
+        } else if (cogReaction) {
+          return 'processing';
+        }
+      }
+    } catch (error) {
+      // Message might not exist yet or no reactions
+    }
+    
+    // Wait 1 second before checking again for initial reaction
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  
+  return 'none';
+}
+
+async function waitForSuccessReaction(channel, timestamp, timeout = 30000) {
+  console.log('⏳ Waiting for success reaction (white_check_mark)...');
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < timeout) {
+    try {
+      const result = await makeSlackRequest('reactions.get', {
+        channel: channel,
+        timestamp: timestamp
+      });
+      
+      if (result.message && result.message.reactions) {
+        const checkmarkReaction = result.message.reactions.find(r => r.name === 'white_check_mark');
+        if (checkmarkReaction) {
           return true;
         }
       }
@@ -110,11 +142,101 @@ async function checkForReaction(channel, timestamp, reactionName, timeout = 3000
   return false;
 }
 
-async function runMultiMessageTest(messages, timeout = 30000) {
-  console.log('🧪 Peerbot Multi-Message Test');
+async function evaluateTestResult(channel, messageTs, timeout, testType = 'Test') {
+  // First, check for any reaction within 10 seconds
+  const initialReaction = await checkForAnyReaction(channel, messageTs, 10000);
+  
+  if (initialReaction === 'none') {
+    console.log('❌ No reaction from bot within 10 seconds - bot failed to acknowledge the message');
+    console.log('\nTroubleshooting steps:');
+    console.log('1. Check dispatcher logs for incoming events: kubectl logs -n peerbot -l app.kubernetes.io/component=dispatcher --tail=50');
+    console.log('2. Verify dispatcher is receiving Slack events: kubectl logs -n peerbot -l app.kubernetes.io/component=dispatcher --tail=50 | grep "mention"');
+    console.log('3. Check if message is queued: kubectl logs -n peerbot -l app.kubernetes.io/component=dispatcher --tail=50 | grep "Enqueuing"');
+    console.log('4. Check orchestrator for scaling issues: kubectl logs -n peerbot -l app.kubernetes.io/component=orchestrator --tail=50');
+    console.log('5. Verify worker pods exist: kubectl get pods -n peerbot | grep claude-worker');
+    console.log('6. Check PostgreSQL connection: kubectl exec -it -n peerbot deployment/peerbot-dispatcher -- nc -zv postgres-service 5432');
+    console.log('7. Restart all components if needed: kubectl rollout restart deployment -n peerbot');
+    process.exit(1);
+  } else if (initialReaction === 'success') {
+    console.log('✅ Bot immediately processed message (checkmark reaction)');
+  } else if (initialReaction === 'processing') {
+    console.log('⚙️ Bot started processing (cog reaction detected)');
+    
+    // Wait for success reaction
+    const hasSuccess = await waitForSuccessReaction(channel, messageTs, timeout);
+    
+    if (!hasSuccess) {
+      console.log('❌ Bot started processing but never completed (no checkmark reaction)');
+      console.log('\nTroubleshooting steps:');
+      console.log('1. Check worker pod status: kubectl get pods -n peerbot | grep claude-worker');
+      console.log('2. Check worker logs for errors: kubectl logs -n peerbot -l app.kubernetes.io/component=claude-worker --tail=100');
+      console.log('3. Check if worker has sufficient resources: kubectl describe pod -n peerbot -l app.kubernetes.io/component=claude-worker');
+      console.log('4. Check queue for stuck messages: kubectl logs -n peerbot -l app.kubernetes.io/component=dispatcher --tail=50 | grep "queue"');
+      console.log('5. Restart worker pods if necessary: kubectl rollout restart deployment/peerbot-claude-worker -n peerbot');
+      console.log('6. Check orchestrator logs: kubectl logs -n peerbot -l app.kubernetes.io/component=orchestrator --tail=50');
+      console.log('7. Verify PostgreSQL queue is accessible: kubectl exec -it -n peerbot deployment/peerbot-dispatcher -- nc -zv postgres-service 5432');
+      process.exit(1);
+    } else {
+      console.log('✅ Bot completed processing (checkmark reaction added)');
+    }
+  }
+  
+  // At this point, we know the bot processed the message (has checkmark)
+  // Wait for response message
+  const response = await waitForBotResponse(channel, messageTs, timeout);
+  
+  // Check for "Starting environment setup" stuck state
+  const isStuckInSetup = response && response.length > 0 && 
+    response[0].text && response[0].text.includes('Starting environment setup') &&
+    response.length === 1 && !response[0].text.includes('✅');
+  
+  if (isStuckInSetup) {
+    console.log('❌ Bot is stuck in "Starting environment setup" message');
+    console.log('\n⚠️ Bot appears to be stuck during initialization');
+    console.log('\nTroubleshooting steps:');
+    console.log('1. Check worker pod status: kubectl get pods -n peerbot | grep claude-worker');
+    console.log('2. Check worker logs for errors: kubectl logs -n peerbot -l app.kubernetes.io/component=claude-worker --tail=100');
+    console.log('3. Check if worker has sufficient resources: kubectl describe pod -n peerbot -l app.kubernetes.io/component=claude-worker');
+    console.log('4. Check queue for stuck messages: kubectl logs -n peerbot -l app.kubernetes.io/component=dispatcher --tail=50 | grep "queue"');
+    console.log('5. Restart worker pods if necessary: kubectl rollout restart deployment/peerbot-claude-worker -n peerbot');
+    console.log('6. Check orchestrator logs: kubectl logs -n peerbot -l app.kubernetes.io/component=orchestrator --tail=50');
+    console.log('7. Verify PostgreSQL queue is accessible: kubectl exec -it -n peerbot deployment/peerbot-dispatcher -- nc -zv postgres-service 5432');
+    process.exit(1);
+  }
+  
+  if (response && response.length > 0) {
+    console.log(`✅ Bot responded with message!`);
+    console.log(`   Response: "${response[0].text?.substring(0, 200)}..."`);
+    
+    // Check if response has blocks (for blockkit)
+    if (response[0].blocks && response[0].blocks.length > 0) {
+      console.log(`   Blocks: ${response[0].blocks.length} blocks found`);
+      const actionBlocks = response[0].blocks.filter(b => b.type === 'actions');
+      if (actionBlocks.length > 0) {
+        console.log(`   ✨ Found ${actionBlocks.length} action block(s) with buttons!`);
+      }
+    }
+    
+    console.log(`\n🎉 ${testType} PASSED!`);
+    return true;
+  } else {
+    console.log('⚠️ Bot processed message but no response was sent');
+    console.log(`\n⚠️ ${testType} PARTIALLY PASSED - Consider this a failure for automation purposes`);
+    process.exit(1);
+  }
+}
+
+async function runTest(messages, timeout = 30000) {
+  const isSingleMessage = messages.length === 1;
+  const testType = isSingleMessage ? 'Test' : 'Multi-Message Test';
+  
+  console.log(`🧪 Peerbot ${testType}`);
   console.log('📤 Sending as: PeerQA');
   console.log('🎯 Target: @peercloud (U097WU1GMLJ)');
-  console.log(`📝 Messages: ${messages.length}\n`);
+  if (!isSingleMessage) {
+    console.log(`📝 Messages: ${messages.length}`);
+  }
+  console.log('');
   
   const targetChannel = 'C0952LTF7DG'; // #peerbot-qa
   let firstMessageTs = null;
@@ -125,7 +247,11 @@ async function runMultiMessageTest(messages, timeout = 30000) {
       const isFirstMessage = i === 0;
       const message = `<@U097WU1GMLJ> ${prompt}`;
       
-      console.log(`📨 Sending message ${i + 1}/${messages.length}${isFirstMessage ? ' (initial)' : ' (thread)'}...`);
+      if (messages.length > 1) {
+        console.log(`📨 Sending message ${i + 1}/${messages.length}${isFirstMessage ? ' (initial)' : ' (thread)'}...`);
+      } else {
+        console.log('📨 Sending test message...');
+      }
       
       const requestBody = {
         channel: targetChannel,
@@ -145,7 +271,10 @@ async function runMultiMessageTest(messages, timeout = 30000) {
       
       console.log(`✅ Sent: "${message}"`);
       console.log(`   Timestamp: ${msg.ts}`);
-      console.log(`   ${isFirstMessage ? 'Thread started' : 'Added to thread'}\n`);
+      if (messages.length > 1) {
+        console.log(`   ${isFirstMessage ? 'Thread started' : 'Added to thread'}`);
+      }
+      console.log('');
       
       // Wait a bit between messages
       if (i < messages.length - 1) {
@@ -156,106 +285,16 @@ async function runMultiMessageTest(messages, timeout = 30000) {
     // Wait a bit for the bot to start processing
     await new Promise(resolve => setTimeout(resolve, 3000));
     
-    // Check for checkmark reaction on original message
-    console.log('⏳ Checking for bot processing...');
-    const hasCheckmark = await checkForReaction(targetChannel, firstMessageTs, 'white_check_mark', timeout);
-    
-    // Wait for response message
-    const response = await waitForBotResponse(targetChannel, firstMessageTs, timeout);
-    
-    if (hasCheckmark && response && response.length > 0) {
-      console.log('✅ Bot processed messages (checkmark reaction added)');
-      console.log(`✅ Bot responded with message!`);
-      console.log(`   Response: "${response[0].text?.substring(0, 200)}..."`);
-      
-      // Check if response has blocks (for blockkit)
-      if (response[0].blocks && response[0].blocks.length > 0) {
-        console.log(`   Blocks: ${response[0].blocks.length} blocks found`);
-        const actionBlocks = response[0].blocks.filter(b => b.type === 'actions');
-        if (actionBlocks.length > 0) {
-          console.log(`   ✨ Found ${actionBlocks.length} action block(s) with buttons!`);
-        }
-      }
-      
-      console.log('\n🎉 Multi-Message Test PASSED!');
-    } else if (hasCheckmark && !response) {
-      console.log('✅ Bot processed messages (checkmark reaction added)');
-      console.log('⚠️  But no response message was sent');
-      console.log('\n⚠️  Test PARTIALLY PASSED');
-    } else if (!hasCheckmark) {
-      console.log('❌ No checkmark reaction - bot may not have processed the messages');
-      console.log('\nTroubleshooting:');
-      console.log('1. Check worker pods: kubectl get pods -n peerbot | grep claude-worker');
-      console.log('2. Check dispatcher logs: kubectl logs -n peerbot -l app.kubernetes.io/component=dispatcher --tail=50');
-      process.exit(1);
-    }
+    // Evaluate test result
+    const success = await evaluateTestResult(targetChannel, firstMessageTs, timeout, testType);
     
     console.log('\n🔗 Channel: https://peerbotcommunity.slack.com/archives/C0952LTF7DG');
     
-  } catch (error) {
-    console.error('❌ Multi-Message Test failed:', error.message);
-    process.exit(1);
-  }
-}
-
-async function runSingleTest(prompt, timeout = 30000) {
-  console.log('🧪 Peerbot Test');
-  console.log('📤 Sending as: PeerQA');
-  console.log('🎯 Target: @peercloud (U097WU1GMLJ)\n');
-  
-  const targetChannel = 'C0952LTF7DG'; // #peerbot-qa
-  
-  try {
-    // Send test message
-    console.log('📨 Sending test message...');
-    const message = `<@U097WU1GMLJ> ${prompt}`;
-    const msg = await makeSlackRequest('chat.postMessage', {
-      channel: targetChannel,
-      text: message
-    });
-    console.log(`✅ Sent: "${message}"`);
-    console.log(`   Timestamp: ${msg.ts}\n`);
-    
-    // Wait a bit for the bot to start processing
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    // Check for checkmark reaction on original message
-    const hasCheckmark = await checkForReaction(targetChannel, msg.ts, 'white_check_mark', timeout);
-    
-    // Wait for response message
-    const response = await waitForBotResponse(targetChannel, msg.ts, timeout);
-    
-    if (hasCheckmark && response && response.length > 0) {
-      console.log('✅ Bot processed message (checkmark reaction added)');
-      console.log(`✅ Bot responded with message!`);
-      console.log(`   Response: "${response[0].text?.substring(0, 200)}..."`);
-      
-      // Check if response has blocks (for blockkit)
-      if (response[0].blocks && response[0].blocks.length > 0) {
-        console.log(`   Blocks: ${response[0].blocks.length} blocks found`);
-        const actionBlocks = response[0].blocks.filter(b => b.type === 'actions');
-        if (actionBlocks.length > 0) {
-          console.log(`   ✨ Found ${actionBlocks.length} action block(s) with buttons!`);
-        }
-      }
-      
-      console.log('\n🎉 Test PASSED!');
-    } else if (hasCheckmark && !response) {
-      console.log('✅ Bot processed message (checkmark reaction added)');
-      console.log('⚠️  But no response message was sent');
-      console.log('\n⚠️  Test PARTIALLY PASSED');
-    } else if (!hasCheckmark) {
-      console.log('❌ No checkmark reaction - bot may not have processed the message');
-      console.log('\nTroubleshooting:');
-      console.log('1. Check worker pods: kubectl get pods -n peerbot | grep claude-worker');
-      console.log('2. Check dispatcher logs: kubectl logs -n peerbot -l app.kubernetes.io/component=dispatcher --tail=50');
-      process.exit(1);
-    }
-    
-    console.log('\n🔗 Channel: https://peerbotcommunity.slack.com/archives/C0952LTF7DG');
+    // Exit with proper code
+    process.exit(success ? 0 : 1);
     
   } catch (error) {
-    console.error('❌ Test failed:', error.message);
+    console.error(`❌ ${testType} failed:`, error.message);
     process.exit(1);
   }
 }
@@ -278,16 +317,10 @@ for (let i = 0; i < args.length; i++) {
 messages = args.filter(arg => arg.trim().length > 0);
 
 if (messages.length > 0) {
-  if (messages.length === 1) {
-    // Single message test
-    runSingleTest(messages[0], timeout);
-  } else {
-    // Multi-message test with threading
-    runMultiMessageTest(messages, timeout);
-  }
+  runTest(messages, timeout);
 } else {
   // Run default tests
-  runSingleTest('Create me a new project for my landing page of a Pet Store? It\' is a fictionary app so be creating don\'t ask me. Project name is "Pet Store {timestamp}"', timeout);
-  runSingleTest('Create a button to add a new pet to the pet store', timeout);
-  runSingleTest("Create 5 tasks which will each return a random number and then you will sum all them.", timeout);
+  runTest(['Create me a new project for my landing page of a Pet Store? It\' is a fictionary app so be creating don\'t ask me. Project name is "Pet Store {timestamp}"'], timeout);
+  runTest(['Create a button to add a new pet to the pet store'], timeout);
+  runTest(["Create 5 tasks which will each return a random number and then you will sum all them."], timeout);
 }

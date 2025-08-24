@@ -2,8 +2,7 @@
 
 import { ClaudeSessionRunner } from "@claude-code-slack/core-runner";
 import { WorkspaceManager } from "./workspace-setup";
-import { SlackIntegration } from "./slack-integration";
-import { SlackTokenManager } from "./slack/token-manager";
+import { QueueIntegration } from "./queue-integration";
 import { extractFinalResponse } from "./claude-output-parser";
 import type { WorkerConfig } from "./types";
 import logger from "./logger";
@@ -14,9 +13,8 @@ import { dirname, relative } from "node:path";
 export class ClaudeWorker {
   private sessionRunner: ClaudeSessionRunner;
   private workspaceManager: WorkspaceManager;
-  private slackIntegration: SlackIntegration;
+  private queueIntegration: QueueIntegration;
   private config: WorkerConfig;
-  private tokenManager?: SlackTokenManager;
 
   constructor(config: WorkerConfig) {
     this.config = config;
@@ -25,110 +23,23 @@ export class ClaudeWorker {
     this.sessionRunner = new ClaudeSessionRunner();
     this.workspaceManager = new WorkspaceManager(config.workspace);
     
-    // Initialize token manager if refresh token is available
-    if (config.slack.refreshToken && config.slack.clientId && config.slack.clientSecret) {
-      this.tokenManager = new SlackTokenManager(
-        config.slack.clientId,
-        config.slack.clientSecret,
-        config.slack.refreshToken,
-        config.slack.token
-      );
-      
-      // Initialize Slack integration with token manager
-      try {
-        this.slackIntegration = new SlackIntegration({
-          ...config.slack,
-          tokenManager: this.tokenManager,
-          responseChannel: config.slackResponseChannel,
-          responseTs: config.slackResponseTs
-        });
-      } catch (error) {
-        logger.error("Failed to initialize SlackIntegration:", error);
-        this.handleSlackInitializationFailure(error as Error);
-        throw error; // Re-throw to stop worker execution
-      }
-    } else {
-      try {
-        this.slackIntegration = new SlackIntegration({
-          ...config.slack,
-          responseChannel: config.slackResponseChannel,
-          responseTs: config.slackResponseTs
-        });
-      } catch (error) {
-        logger.error("Failed to initialize SlackIntegration:", error);
-        this.handleSlackInitializationFailure(error as Error);
-        throw error; // Re-throw to stop worker execution
-      }
+    // Initialize queue integration with database URL
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) {
+      const error = new Error("DATABASE_URL environment variable is required");
+      logger.error("Failed to initialize QueueIntegration:", error);
+      throw error;
     }
+    
+    this.queueIntegration = new QueueIntegration({
+      databaseUrl: databaseUrl,
+      responseChannel: config.slackResponseChannel,
+      responseTs: config.slackResponseTs,
+      messageId: process.env.INITIAL_SLACK_MESSAGE_ID || config.slackResponseTs
+    });
   }
 
-  /**
-   * Handle Slack initialization failure by posting error via kubectl and exiting
-   */
-  private handleSlackInitializationFailure(error: Error): void {
-    logger.error(`Slack initialization failed: ${error.message}`);
-    
-    // Try to post error message using kubectl and Slack API
-    const errorMessage = `❌ **Worker Configuration Error**\n\nFailed to initialize Slack integration: ${error.message}\n\nThis is likely a configuration issue with environment variables. Please check the worker deployment.`;
-    
-    try {
-      // Use kubectl to create a temporary job that posts the error message to Slack
-      const slackToken = process.env.SLACK_BOT_TOKEN;
-      const channel = process.env.INITIAL_SLACK_RESPONSE_CHANNEL;
-      const ts = process.env.INITIAL_SLACK_RESPONSE_TS;
-      
-      if (slackToken && channel && ts) {
-        // Create a simple curl command to update the Slack message
-        const curlCommand = `curl -X POST https://slack.com/api/chat.update \\
-          -H "Authorization: Bearer ${slackToken}" \\
-          -H "Content-Type: application/json" \\
-          -d '{
-            "channel": "${channel}",
-            "ts": "${ts}",
-            "text": "${errorMessage.replace(/"/g, '\\"').replace(/\n/g, '\\n')}"
-          }'`;
-        
-        execSync(curlCommand, { stdio: 'inherit' });
-        logger.info("Posted error message to Slack via curl");
-      } else {
-        logger.error("Cannot post error to Slack - missing environment variables");
-        logger.error(`SLACK_BOT_TOKEN: ${!!slackToken}, CHANNEL: ${channel}, TS: ${ts}`);
-      }
-    } catch (curlError) {
-      logger.error("Failed to post error message to Slack:", curlError);
-    }
-  }
 
-  /**
-   * Fallback method to post error to Slack using curl when SlackIntegration fails
-   */
-  private postErrorToSlackFallback(errorMessage: string): void {
-    try {
-      const slackToken = process.env.SLACK_BOT_TOKEN;
-      const channel = process.env.INITIAL_SLACK_RESPONSE_CHANNEL;
-      const ts = process.env.INITIAL_SLACK_RESPONSE_TS;
-      
-      if (slackToken && channel && ts) {
-        // Create a simple curl command to update the Slack message
-        const curlCommand = `curl -X POST https://slack.com/api/chat.update \\
-          -H "Authorization: Bearer ${slackToken}" \\
-          -H "Content-Type: application/json" \\
-          -d '{
-            "channel": "${channel}",
-            "ts": "${ts}",
-            "text": "${errorMessage.replace(/"/g, '\\"').replace(/\n/g, '\\n')}"
-          }'`;
-        
-        execSync(curlCommand, { stdio: 'inherit' });
-        logger.info("Posted error message to Slack via curl fallback");
-      } else {
-        logger.error("Cannot post error to Slack - missing environment variables");
-        logger.error(`SLACK_BOT_TOKEN: ${!!slackToken}, CHANNEL: ${channel}, TS: ${ts}`);
-      }
-    } catch (curlError) {
-      logger.error("Fallback curl to Slack also failed:", curlError);
-    }
-  }
 
   private listMakefilePaths(rootDirectory: string): string[] {
     const foundMakefiles: string[] = [];
@@ -218,19 +129,20 @@ export class ClaudeWorker {
       logger.info(`🚀 Starting Claude worker for session: ${this.config.sessionKey} [test-change]`);
       logger.info(`[TIMING] Worker execute() started at: ${new Date(executeStartTime).toISOString()}`);
       
-      // Add "gear" reaction to indicate worker is running
-      if (originalMessageTs) {
-        logger.info(`Adding gear reaction to message ${originalMessageTs}`);
-        await this.slackIntegration.removeReaction("eyes", originalMessageTs);
-        await this.slackIntegration.addReaction("gear", originalMessageTs);
-      }
+      // Start queue integration
+      await this.queueIntegration.start();
+      
+      // Reactions are now handled by dispatcher based on message isDone status
+
+      // Show stop button when worker starts processing
+      this.queueIntegration.showStopButton();
       
       // Decode user prompt first
       const userPrompt = Buffer.from(this.config.userPrompt, "base64").toString("utf-8");
       logger.info(`User prompt: ${userPrompt.substring(0, 100)}...`);
       
-      // Update initial Slack message with simple status
-      await this.slackIntegration.updateProgress("💻 Setting up workspace...");
+      // Update initial message with simple status
+      await this.queueIntegration.updateProgress("💻 Setting up workspace...");
 
       // Setup workspace
       logger.info("Setting up workspace...");
@@ -243,20 +155,6 @@ export class ClaudeWorker {
       // Create or checkout session branch
       logger.info("Setting up session branch...");
       await this.workspaceManager.createSessionBranch(this.config.sessionKey);
-
-      // Update progress with simple status
-      await this.slackIntegration.updateProgress("🚀 Starting Claude session...");
-
-      // Check if we should resume an existing session
-      const shouldResume = !!this.config.resumeSessionId;
-      if (shouldResume) {
-        logger.info(`Resuming Claude session: ${this.config.resumeSessionId}`);
-        await this.slackIntegration.updateProgress("🔄 Resuming Claude session...");
-      } else {
-        logger.info("Creating new Claude session");
-        await this.slackIntegration.updateProgress("🤖 Creating new agent session...");
-      }
-
       // Prepare session context
       const sessionContext = {
         platform: "slack" as const,
@@ -290,11 +188,11 @@ export class ClaudeWorker {
             logger.info(`[TIMING] First Claude output at: ${new Date().toISOString()} (${Date.now() - claudeStartTime}ms after Claude start)`);
             firstOutputLogged = true;
             // Update progress to show Claude is now actively working
-            await this.slackIntegration.sendTyping();
+            await this.queueIntegration.sendTyping();
           }
-          // Stream progress to Slack
+          // Stream progress via queue
           if (update.type === "output" && update.data) {
-            await this.slackIntegration.streamProgress(update.data);
+            await this.queueIntegration.streamProgress(update.data);
           }
         },
       });
@@ -334,29 +232,25 @@ export class ClaudeWorker {
           ? claudeResponse 
           : "✅ Task completed successfully";
         
-        logger.info(`Updating Slack with final message: ${finalMessage.substring(0, 100)}...`);
-        await this.slackIntegration.updateProgress(finalMessage);
+        logger.info(`Sending final message via queue: ${finalMessage.substring(0, 100)}...`);
+        await this.queueIntegration.updateProgress(finalMessage);
+        await this.queueIntegration.signalDone(finalMessage);
         
-        // Update reaction to success
-        logger.info(`Updating reaction to success. originalMessageTs: ${originalMessageTs}`);
-        if (originalMessageTs) {
-          logger.info(`Removing gear and adding check mark reaction to ${originalMessageTs}`);
-          await this.slackIntegration.removeReaction("gear", originalMessageTs);
-          await this.slackIntegration.addReaction("white_check_mark", originalMessageTs);
-        } else {
-          logger.info('No originalMessageTs found, skipping reaction update');
-        }
+        // Hide stop button and update reaction to success
+        this.queueIntegration.hideStopButton();
+        
+        // Reactions are now handled by dispatcher based on message isDone status
       } else {
+        // Hide stop button and show error
+        this.queueIntegration.hideStopButton();
+        
         const errorMsg = result.error || "Unknown error";
-        await this.slackIntegration.updateProgress(
+        await this.queueIntegration.updateProgress(
           `❌ Session failed: ${errorMsg}`
         );
+        await this.queueIntegration.signalError(new Error(errorMsg));
         
-        // Update reaction to error
-        if (originalMessageTs) {
-          await this.slackIntegration.removeReaction("gear", originalMessageTs);
-          await this.slackIntegration.addReaction("x", originalMessageTs);
-        }
+        // Reactions are now handled by dispatcher based on error status
       }
 
       logger.info(`Worker completed with ${result.success ? "success" : "failure"}`);
@@ -376,24 +270,18 @@ export class ClaudeWorker {
         logger.warn("Error push failed:", pushError);
       }
       
-      // Try to update Slack with error - if SlackIntegration fails, use fallback method
+      // Try to send error via queue
       try {
-        await this.slackIntegration.updateProgress(
-          `💥 Worker crashed: ${error instanceof Error ? error.message : "Unknown error"}`
-        );
+        // Hide stop button before showing error
+        this.queueIntegration.hideStopButton();
         
-        // Update reaction to error
-        const originalMessageTs = process.env.ORIGINAL_MESSAGE_TS;
-        if (originalMessageTs) {
-          await this.slackIntegration.removeReaction("gear", originalMessageTs).catch(() => {});
-          await this.slackIntegration.removeReaction("eyes", originalMessageTs).catch(() => {});
-          await this.slackIntegration.addReaction("x", originalMessageTs).catch(() => {});
-        }
-      } catch (slackError) {
-        logger.error("Failed to update Slack with error via SlackIntegration:", slackError);
+        const errorMessage = `💥 Worker crashed: ${error instanceof Error ? error.message : "Unknown error"}`;
+        await this.queueIntegration.updateProgress(errorMessage);
+        await this.queueIntegration.signalError(error instanceof Error ? error : new Error("Unknown error"));
         
-        // Fallback: Use direct curl to post error message
-        this.postErrorToSlackFallback(`💥 Worker crashed: ${error instanceof Error ? error.message : "Unknown error"}`);
+        // Reactions are now handled by dispatcher based on error status
+      } catch (queueError) {
+        logger.error("Failed to send error via queue:", queueError);
       }
 
       // Re-throw to ensure container exits with error code
@@ -497,6 +385,9 @@ ${this.getMakeTargetsSummary()}
     try {
       logger.info("Cleaning up worker resources...");
       
+      // Cleanup queue integration
+      this.queueIntegration.cleanup();
+      await this.queueIntegration.stop();
       
       // Cleanup session runner
       await this.sessionRunner.cleanupSession(this.config.sessionKey);

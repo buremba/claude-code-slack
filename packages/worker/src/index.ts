@@ -2,7 +2,7 @@
 
 import { ClaudeWorker } from "./claude-worker";
 import { QueuePersistentClaudeWorker } from "./queue-persistent-worker";
-import { SlackIntegration } from "./slack-integration";
+import { QueueIntegration } from "./queue-integration";
 import type { WorkerConfig } from "./types";
 import logger from "./logger";
 
@@ -109,21 +109,21 @@ async function main() {
       const errorMessage = `Missing required environment variables: ${missingVars.join(", ")}`;
       logger.error(`❌ ${errorMessage}`);
       
-      // Try to update Slack if we have enough config
-      if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_RESPONSE_CHANNEL && process.env.SLACK_RESPONSE_TS) {
+      // Try to update via queue if we have enough config
+      if (process.env.DATABASE_URL && process.env.SLACK_RESPONSE_CHANNEL && process.env.SLACK_RESPONSE_TS) {
         try {
-          const slackIntegration = new SlackIntegration({
-            token: process.env.SLACK_BOT_TOKEN,
-            refreshToken: process.env.SLACK_REFRESH_TOKEN,
-            clientId: process.env.SLACK_CLIENT_ID,
-            clientSecret: process.env.SLACK_CLIENT_SECRET,
+          const queueIntegration = new QueueIntegration({
+            databaseUrl: process.env.DATABASE_URL,
+            responseChannel: process.env.SLACK_RESPONSE_CHANNEL,
+            responseTs: process.env.SLACK_RESPONSE_TS,
+            messageId: process.env.SLACK_RESPONSE_TS
           });
           
-          await slackIntegration.updateProgress(
-            `💥 Worker failed to start: ${errorMessage}`
-          );
-        } catch (slackError) {
-          logger.error("Failed to send error to Slack:", slackError);
+          await queueIntegration.start();
+          await queueIntegration.signalError(new Error(`Worker failed to start: ${errorMessage}`));
+          await queueIntegration.stop();
+        } catch (queueError) {
+          logger.error("Failed to send error via queue:", queueError);
         }
       }
       
@@ -145,23 +145,23 @@ async function main() {
   } catch (error) {
     logger.error("❌ Worker execution failed:", error);
     
-    // Try to report error to Slack if possible
-    if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_RESPONSE_CHANNEL && process.env.SLACK_RESPONSE_TS) {
+    // Try to report error via queue if possible
+    if (process.env.DATABASE_URL && process.env.SLACK_RESPONSE_CHANNEL && process.env.SLACK_RESPONSE_TS) {
       try {
-        const slackIntegration = new SlackIntegration({
-          token: process.env.SLACK_BOT_TOKEN,
-          refreshToken: process.env.SLACK_REFRESH_TOKEN,
-          clientId: process.env.SLACK_CLIENT_ID,
-          clientSecret: process.env.SLACK_CLIENT_SECRET,
+        const queueIntegration = new QueueIntegration({
+          databaseUrl: process.env.DATABASE_URL,
+          responseChannel: process.env.SLACK_RESPONSE_CHANNEL,
+          responseTs: process.env.SLACK_RESPONSE_TS,
+          messageId: process.env.SLACK_RESPONSE_TS
         });
         
         const errorMessage = error instanceof Error ? error.message : "Unknown error";
         
-        await slackIntegration.updateProgress(
-          `💥 Worker failed: ${errorMessage}`
-        );
-      } catch (slackError) {
-        logger.error("Failed to send error to Slack:", slackError);
+        await queueIntegration.start();
+        await queueIntegration.signalError(new Error(`Worker failed: ${errorMessage}`));
+        await queueIntegration.stop();
+      } catch (queueError) {
+        logger.error("Failed to send error via queue:", queueError);
       }
     }
     
@@ -192,32 +192,31 @@ process.on("SIGINT", async () => {
 });
 
 /**
- * Append termination message to Slack when worker is terminated
+ * Append termination message via queue when worker is terminated
  */
 async function appendTerminationMessage(signal: string): Promise<void> {
   try {
-    if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_RESPONSE_CHANNEL && process.env.SLACK_RESPONSE_TS) {
-      const slackIntegration = new SlackIntegration({
-        token: process.env.SLACK_BOT_TOKEN,
-        refreshToken: process.env.SLACK_REFRESH_TOKEN,
-        clientId: process.env.SLACK_CLIENT_ID,
-        clientSecret: process.env.SLACK_CLIENT_SECRET,
+    if (process.env.DATABASE_URL && process.env.SLACK_RESPONSE_CHANNEL && process.env.SLACK_RESPONSE_TS) {
+      const queueIntegration = new QueueIntegration({
+        databaseUrl: process.env.DATABASE_URL,
+        responseChannel: process.env.SLACK_RESPONSE_CHANNEL,
+        responseTs: process.env.SLACK_RESPONSE_TS,
+        messageId: process.env.SLACK_RESPONSE_TS
       });
       
-      await slackIntegration.updateProgress(
+      await queueIntegration.start();
+      await queueIntegration.updateProgress(
         `🛑 **Worker terminated (${signal})** - The host is terminated and not processing further requests.`
       );
+      await queueIntegration.signalDone();
       
-      // Update reaction to show termination
-      const originalMessageTs = process.env.ORIGINAL_MESSAGE_TS;
-      if (originalMessageTs) {
-        await slackIntegration.removeReaction("gear", originalMessageTs).catch(() => {});
-        await slackIntegration.removeReaction("eyes", originalMessageTs).catch(() => {});
-        await slackIntegration.addReaction("stop_sign", originalMessageTs).catch(() => {});
-      }
+      // Reactions are now handled by dispatcher based on message isDone status
+      // No direct reaction calls needed here
+      
+      await queueIntegration.stop();
     }
   } catch (error) {
-    logger.error(`Failed to send ${signal} termination message to Slack:`, error);
+    logger.error(`Failed to send ${signal} termination message via queue:`, error);
   }
 }
 
