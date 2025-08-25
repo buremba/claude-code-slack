@@ -1,11 +1,9 @@
 #!/usr/bin/env bun
 
-import type { SlackTokenManager } from "./slack/token-manager";
 
 export interface WorkerConfig {
   sessionKey: string;
   userId: string;
-  username: string;
   channelId: string;
   threadTs?: string;
   repositoryUrl: string;
@@ -14,12 +12,6 @@ export interface WorkerConfig {
   slackResponseTs: string;
   claudeOptions: string; // JSON string
   resumeSessionId?: string; // Claude session ID to resume from
-  slack: {
-    token: string;
-    refreshToken?: string;
-    clientId?: string;
-    clientSecret?: string;
-  };
   workspace: {
     baseDirectory: string;
     githubToken: string;
@@ -31,13 +23,6 @@ export interface WorkspaceSetupConfig {
   githubToken: string;
 }
 
-export interface SlackConfig {
-  token: string;
-  refreshToken?: string;
-  clientId?: string;
-  clientSecret?: string;
-  tokenManager?: SlackTokenManager;
-}
 
 export interface GitRepository {
   url: string;

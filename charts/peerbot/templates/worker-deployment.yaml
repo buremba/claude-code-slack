@@ -81,10 +81,7 @@ spec:
           value: "{{ .Values.pgboss.retryDelay }}"
         - name: PGBOSS_EXPIRE_HOURS
           value: "{{ .Values.pgboss.expireInHours }}"
-        
-        # Worker configuration
-        - name: WORKER_MODE
-          value: "queue"
+      
         - name: USER_ID
           value: "worker"
         - name: LOG_LEVEL

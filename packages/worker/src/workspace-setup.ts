@@ -374,6 +374,17 @@ export class WorkspaceManager {
               cwd: this.workspaceInfo.userDirectory,
             });
             logger.info(`Created new session branch: ${branchName}`);
+            
+            // Push the new branch to GitHub immediately to ensure it exists
+            try {
+              await execAsync(`git push -u origin "${branchName}"`, {
+                cwd: this.workspaceInfo.userDirectory,
+                timeout: 30000
+              });
+              logger.info(`Pushed new session branch to GitHub: ${branchName}`);
+            } catch (pushError) {
+              logger.warn(`Failed to push new branch to GitHub:`, pushError);
+            }
           }
         } catch (error) {
           // Error checking remote, create new branch
@@ -381,6 +392,17 @@ export class WorkspaceManager {
             cwd: this.workspaceInfo.userDirectory,
           });
           logger.info(`Created new session branch: ${branchName}`);
+          
+          // Push the new branch to GitHub immediately to ensure it exists
+          try {
+            await execAsync(`git push -u origin "${branchName}"`, {
+              cwd: this.workspaceInfo.userDirectory,
+              timeout: 30000
+            });
+            logger.info(`Pushed new session branch to GitHub: ${branchName}`);
+          } catch (pushError) {
+            logger.warn(`Failed to push new branch to GitHub:`, pushError);
+          }
         }
       }
       

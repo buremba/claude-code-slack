@@ -109,7 +109,6 @@ export class DeploymentManager {
 
       const secretData = {
         'DATABASE_URL': Buffer.from(`postgres://${username}:${password}@peerbot-postgresql:5432/peerbot`).toString('base64'),
-        'POSTGRESQL_CONNECTION_STRING': Buffer.from(`postgres://${username}:${password}@peerbot-postgresql:5432/peerbot`).toString('base64'),
         'DB_USERNAME': Buffer.from(username).toString('base64'),
         'DB_PASSWORD': Buffer.from(password).toString('base64')
       };
@@ -229,15 +228,6 @@ export class DeploymentManager {
                     }
                   }
                 },
-                {
-                  name: 'POSTGRESQL_CONNECTION_STRING',
-                  valueFrom: {
-                    secretKeyRef: {
-                      name: `peerbot-user-secret-${username.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()}`,
-                      key: 'POSTGRESQL_CONNECTION_STRING'
-                    }
-                  }
-                },
                 // Worker configuration
                 {
                   name: 'WORKER_MODE',
@@ -256,10 +246,6 @@ export class DeploymentManager {
                   value: messageData?.agentSessionId || `session-${userId}-${Date.now()}`
                 },
                 {
-                  name: 'USERNAME',
-                  value: messageData?.platformMetadata?.userDisplayName || 'Unknown User'
-                },
-                {
                   name: 'CHANNEL_ID',
                   value: messageData?.channelId || 'unknown-channel'
                 },
@@ -270,15 +256,6 @@ export class DeploymentManager {
                 {
                   name: 'ORIGINAL_MESSAGE_TS',
                   value: messageData?.platformMetadata?.originalMessageTs || messageData?.messageId || 'unknown'
-                },
-                {
-                  name: 'SLACK_BOT_TOKEN',
-                  valueFrom: {
-                    secretKeyRef: {
-                      name: 'peerbot-secrets',
-                      key: 'slack-bot-token'
-                    }
-                  }
                 },
                 {
                   name: 'GITHUB_TOKEN',
@@ -307,6 +284,11 @@ export class DeploymentManager {
                 {
                   name: 'WORKSPACE_PATH',
                   value: '/workspace'
+                },
+                // Exit timeout configuration - exit after idle period
+                {
+                  name: 'EXIT_ON_IDLE_MINUTES',
+                  value: process.env.WORKER_EXIT_ON_IDLE_MINUTES || '10'
                 }
               ],
               ports: [{

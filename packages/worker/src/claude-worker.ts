@@ -96,7 +96,7 @@ export class ClaudeWorker {
   }
 
   private getMakeTargetsSummary(): string {
-    const root = `/workspace/${this.config.username}`;
+    const root = `/workspace/${this.config.userId}`;
     const makefiles = this.listMakefilePaths(root);
     if (makefiles.length === 0) return "  - none";
 
@@ -122,8 +122,7 @@ export class ClaudeWorker {
    */
   async execute(): Promise<void> {
     const executeStartTime = Date.now();
-    // Get original message timestamp for reactions (defined outside try block)
-    const originalMessageTs = process.env.ORIGINAL_MESSAGE_TS;
+    // Original message timestamp available via process.env.ORIGINAL_MESSAGE_TS if needed
     
     try {
       logger.info(`🚀 Starting Claude worker for session: ${this.config.sessionKey} [test-change]`);
@@ -148,7 +147,7 @@ export class ClaudeWorker {
       logger.info("Setting up workspace...");
       await this.workspaceManager.setupWorkspace(
         this.config.repositoryUrl,
-        this.config.username,
+        this.config.userId,
         this.config.sessionKey
       );
       
@@ -160,7 +159,7 @@ export class ClaudeWorker {
         platform: "slack" as const,
         channelId: this.config.channelId,
         userId: this.config.userId,
-        userDisplayName: this.config.username,
+        userDisplayName: this.config.userId,
         threadTs: this.config.threadTs,
         messageTs: this.config.slackResponseTs,
         repositoryUrl: this.config.repositoryUrl,
@@ -222,7 +221,6 @@ export class ClaudeWorker {
 
       
       if (result.success) {
-        logger.info("Calling slackIntegration.updateProgress...");
         // Update with Claude's response and completion status
         const claudeResponse = this.formatClaudeResponse(result.output);
         
@@ -294,13 +292,14 @@ export class ClaudeWorker {
    */
   private generateCustomInstructions(): string {
     return `
-You are a helpful Claude Code agent running in a pod on K8S for user ${this.config.username}. 
+You are a helpful Claude Code agent running in a pod on K8S for user ${this.config.userId}. 
 You MUST generate Markdown content that will be rendered in user's messaging app. 
 
 **Code Block Actions:**
 You can add action metadata to code blocks to create interactive buttons. 
 The metadata goes in the fence info, NOT in the content.
 Only use it to run commands and programs, not to create forms or links.
+IMPORTANT: Code blocks with action metadata MUST be less than 2000 characters. Longer code blocks will be skipped and won't create buttons.
 
 **Examples:**
 
@@ -345,7 +344,6 @@ ${this.getMakeTargetsSummary()}
 - Push only to this branch (no PR creation, the user has to create PR manually).
 - Focus on the user's request.
 - Always prefer numbered lists over bullet points.
-- After changes, ask the user to click "Pull Request" button below.
 
 **Instructions:**
 1. New project: create a folder in the current directory; ask for name, tech stack (dbname,providername,apiservicename etc.) in a form and autopopulate if provided. Collect secrets if needed. Deployment types are Node.js/bun, Python/uv, Docker, Docker Compose, Cloudflare (install flarectl and ask for personal access token.).

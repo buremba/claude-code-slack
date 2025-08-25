@@ -37,6 +37,9 @@ export class WorkerQueueConsumer {
   private userId: string;
   private deploymentName: string;
   private targetThreadId?: string;
+  private lastMessageTime: number = Date.now();
+  private exitTimeoutMinutes?: number;
+  private exitTimeoutTimer?: NodeJS.Timeout;
 
   constructor(
     connectionString: string,
@@ -48,6 +51,18 @@ export class WorkerQueueConsumer {
     this.userId = userId;
     this.deploymentName = deploymentName;
     this.targetThreadId = targetThreadId;
+    
+    // Check for exit timeout from environment
+    const exitTimeoutEnv = process.env.EXIT_ON_IDLE_MINUTES;
+    if (exitTimeoutEnv) {
+      this.exitTimeoutMinutes = parseInt(exitTimeoutEnv, 10);
+      if (isNaN(this.exitTimeoutMinutes) || this.exitTimeoutMinutes <= 0) {
+        logger.warn(`Invalid EXIT_ON_IDLE_MINUTES value: ${exitTimeoutEnv}, ignoring exit timeout`);
+        this.exitTimeoutMinutes = undefined;
+      } else {
+        logger.info(`Exit-on-idle timeout configured: ${this.exitTimeoutMinutes} minutes`);
+      }
+    }
   }
 
   /**
@@ -75,9 +90,59 @@ export class WorkerQueueConsumer {
       }
       logger.info(`📥 Listening to queue: ${threadQueueName}`);
       
+      // Start exit timeout monitoring if configured
+      this.startExitTimeoutMonitoring();
+      
     } catch (error) {
       logger.error("Failed to start worker queue consumer:", error);
       throw error;
+    }
+  }
+
+  /**
+   * Start exit timeout monitoring
+   * If configured, will exit the container after specified minutes of inactivity
+   */
+  private startExitTimeoutMonitoring(): void {
+    if (!this.exitTimeoutMinutes) {
+      return;
+    }
+
+    const checkInterval = 30000; // Check every 30 seconds
+    const timeoutMs = this.exitTimeoutMinutes * 60 * 1000;
+    
+    this.exitTimeoutTimer = setInterval(() => {
+      if (!this.isRunning) {
+        return;
+      }
+      
+      const now = Date.now();
+      const timeSinceLastMessage = now - this.lastMessageTime;
+      
+      if (timeSinceLastMessage > timeoutMs && !this.isProcessing) {
+        logger.info(`⏰ No messages received for ${this.exitTimeoutMinutes} minutes, exiting container with success`);
+        logger.info(`Last message was at: ${new Date(this.lastMessageTime).toISOString()}`);
+        logger.info(`Current time: ${new Date(now).toISOString()}`);
+        
+        // Exit with code 0 to indicate successful completion
+        this.gracefulExit(0);
+      }
+    }, checkInterval);
+    
+    logger.info(`Started exit-on-idle monitoring (${this.exitTimeoutMinutes} minutes timeout)`);
+  }
+
+  /**
+   * Perform graceful exit
+   */
+  private async gracefulExit(exitCode: number): Promise<void> {
+    try {
+      logger.info('Performing graceful exit...');
+      await this.stop();
+      process.exit(exitCode);
+    } catch (error) {
+      logger.error('Error during graceful exit:', error);
+      process.exit(1);
     }
   }
 
@@ -87,6 +152,12 @@ export class WorkerQueueConsumer {
   async stop(): Promise<void> {
     try {
       this.isRunning = false;
+      
+      // Clear exit timeout timer
+      if (this.exitTimeoutTimer) {
+        clearInterval(this.exitTimeoutTimer);
+        this.exitTimeoutTimer = undefined;
+      }
       
       // Cleanup current worker if processing
       if (this.currentWorker) {
@@ -165,6 +236,7 @@ export class WorkerQueueConsumer {
     }
 
     this.isProcessing = true;
+    this.lastMessageTime = Date.now(); // Reset timeout on message received
     const jobId = 'worker-processed'; // Can't extract ID from serialized format
 
     try {
@@ -224,7 +296,6 @@ export class WorkerQueueConsumer {
     return {
       sessionKey: payload.agentSessionId || `session-${payload.threadId}`,
       userId: payload.userId,
-      username: platformMetadata.githubUsername || `user-${payload.userId}`,
       channelId: payload.channelId,
       threadTs: payload.threadId,
       repositoryUrl: platformMetadata.repositoryUrl || "",
@@ -233,12 +304,6 @@ export class WorkerQueueConsumer {
       slackResponseTs: platformMetadata.slackResponseTs || payload.messageId,
       claudeOptions: JSON.stringify(payload.claudeOptions),
       resumeSessionId: undefined, // Don't resume - each message starts fresh
-      slack: {
-        token: "", // No longer needed - queue integration handles communication
-        refreshToken: undefined,
-        clientId: undefined,
-        clientSecret: undefined,
-      },
       workspace: {
         baseDirectory: "/workspace",
         githubToken: process.env.GITHUB_TOKEN!,

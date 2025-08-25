@@ -269,7 +269,7 @@ async function main() {
         ssl: process.env.DATABASE_SSL === 'true'
       },
       queues: {
-        connectionString: process.env.POSTGRESQL_CONNECTION_STRING!,
+        connectionString: process.env.DATABASE_URL!,
         retryLimit: parseInt(process.env.PGBOSS_RETRY_LIMIT || '3'),
         retryDelay: parseInt(process.env.PGBOSS_RETRY_DELAY || '30'),
         expireInHours: parseInt(process.env.PGBOSS_EXPIRE_HOURS || '22')
@@ -297,7 +297,7 @@ async function main() {
 
     // Validate required configuration
     if (!config.queues.connectionString) {
-      throw new Error('POSTGRESQL_CONNECTION_STRING is required');
+      throw new Error('DATABASE_URL is required');
     }
 
     if (!config.database.password) {

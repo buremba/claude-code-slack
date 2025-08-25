@@ -57,8 +57,8 @@ export class QueuePersistentClaudeWorker {
   }
 
   private buildConnectionString(): string {
-    // Use the pre-built connection string from environment if available
-    const connectionString = process.env.POSTGRESQL_CONNECTION_STRING || process.env.DATABASE_URL;
+    // Use DATABASE_URL from environment
+    const connectionString = process.env.DATABASE_URL;
     if (connectionString) {
       return connectionString;
     }
@@ -77,7 +77,6 @@ export class QueuePersistentClaudeWorker {
     return {
       sessionKey: process.env.SESSION_KEY!,
       userId: process.env.USER_ID!,
-      username: process.env.USERNAME!,
       channelId: process.env.CHANNEL_ID!,
       threadTs: process.env.THREAD_ID || undefined,
       repositoryUrl: process.env.REPOSITORY_URL!,
@@ -86,12 +85,6 @@ export class QueuePersistentClaudeWorker {
       slackResponseTs: "", // Will be populated from queue messages
       claudeOptions: "{}",
       resumeSessionId: undefined,
-      slack: {
-        token: process.env.SLACK_BOT_TOKEN!,
-        refreshToken: process.env.SLACK_REFRESH_TOKEN,
-        clientId: process.env.SLACK_CLIENT_ID,
-        clientSecret: process.env.SLACK_CLIENT_SECRET,
-      },
       workspace: {
         baseDirectory: "/workspace",
         githubToken: process.env.GITHUB_TOKEN!,

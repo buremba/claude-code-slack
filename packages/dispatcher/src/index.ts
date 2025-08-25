@@ -14,8 +14,9 @@ import logger from "./logger";
 export class SlackDispatcher {
   private app: App;
   private queueProducer: QueueProducer;
-  private threadResponseConsumer: ThreadResponseConsumer;
+  private threadResponseConsumer?: ThreadResponseConsumer;
   private repoManager: GitHubRepositoryManager;
+  private eventHandlers?: SlackEventHandlers;
   private config: DispatcherConfig;
 
   constructor(config: DispatcherConfig) {
@@ -67,19 +68,11 @@ export class SlackDispatcher {
       logger.info("Initialized Slack app in Socket mode");
     }
 
-    // Initialize queue producer with database config for user configs
+    // Initialize queue producer - use DATABASE_URL for consistency
     logger.info("Initializing queue mode");
-    const databaseConfig = {
-      host: process.env.DATABASE_HOST || 'localhost',
-      port: parseInt(process.env.DATABASE_PORT || '5432'),
-      database: process.env.DATABASE_NAME || 'peerbot',
-      username: process.env.DATABASE_USERNAME || 'postgres',
-      password: process.env.DATABASE_PASSWORD || '',
-      ssl: process.env.DATABASE_SSL === 'true'
-    };
-    this.queueProducer = new QueueProducer(config.queues.connectionString, databaseConfig);
-    this.threadResponseConsumer = new ThreadResponseConsumer(config.queues.connectionString, config.slack.token);
+    this.queueProducer = new QueueProducer(config.queues.connectionString);
     this.repoManager = new GitHubRepositoryManager(config.github);
+    // ThreadResponseConsumer will be created after event handlers are initialized
 
     this.setupErrorHandling();
     this.setupGracefulShutdown();
@@ -107,12 +100,14 @@ export class SlackDispatcher {
       await this.queueProducer.start();
       logger.info("✅ Queue producer started");
       
-      // Start thread response consumer
-      await this.threadResponseConsumer.start();
-      logger.info("✅ Thread response consumer started");
-      
       // Get bot's own user ID and bot ID dynamically before starting
       await this.initializeBotInfo(this.config);
+      
+      // Start thread response consumer (after event handlers are created)
+      if (this.threadResponseConsumer) {
+        await this.threadResponseConsumer.start();
+        logger.info("✅ Thread response consumer started");
+      }
       
       // We'll test auth after starting the server
       logger.info("Starting Slack app with token:", {
@@ -248,7 +243,9 @@ export class SlackDispatcher {
       await this.app.stop();
       
       await this.queueProducer.stop();
-      await this.threadResponseConsumer.stop();
+      if (this.threadResponseConsumer) {
+        await this.threadResponseConsumer.stop();
+      }
       
       logger.info("Slack dispatcher stopped");
     } catch (error) {
@@ -311,11 +308,19 @@ export class SlackDispatcher {
       
       // Initialize queue-based event handlers
       logger.info("Initializing queue-based event handlers");
-      new SlackEventHandlers(
+      this.eventHandlers = new SlackEventHandlers(
         this.app,
         this.queueProducer,
         this.repoManager,
         config
+      );
+
+      // Now create ThreadResponseConsumer with access to user mappings
+      this.threadResponseConsumer = new ThreadResponseConsumer(
+        config.queues.connectionString,
+        config.slack.token,
+        this.repoManager,
+        this.eventHandlers.getUserMappings()
       );
     } catch (error) {
       logger.error("Failed to get bot info:", error);
@@ -421,7 +426,7 @@ async function main() {
       logLevel: process.env.LOG_LEVEL as any || LogLevel.INFO,
       // Queue configuration (required)
       queues: {
-        connectionString: process.env.POSTGRESQL_CONNECTION_STRING!,
+        connectionString: process.env.DATABASE_URL!,
         directMessage: process.env.QUEUE_DIRECT_MESSAGE || "direct_message",
         messageQueue: process.env.QUEUE_MESSAGE_QUEUE || "message_queue",
         retryLimit: parseInt(process.env.PGBOSS_RETRY_LIMIT || "3"),
@@ -445,7 +450,7 @@ async function main() {
       throw new Error("GITHUB_TOKEN is required");
     }
     if (!config.queues.connectionString) {
-      throw new Error("POSTGRESQL_CONNECTION_STRING is required");
+      throw new Error("DATABASE_URL is required");
     }
 
     // Create and start dispatcher

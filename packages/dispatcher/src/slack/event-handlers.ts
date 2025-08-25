@@ -611,17 +611,94 @@ export class SlackEventHandlers {
         if (actionId.startsWith("blockkit_form_")) {
           await this.handleBlockkitForm(actionId, userId, channelId, messageTs, body, client);
         }
+        // Handle executable code block buttons (bash, python, etc.)
+        else if (actionId.match(/^(bash|python|javascript|js|typescript|ts|sql|sh)_/)) {
+          await this.handleExecutableCodeBlock(actionId, userId, channelId, messageTs, body, client);
+        }
         // Handle stop worker button clicks
         else if (actionId.startsWith("stop_worker_")) {
           const deploymentName = actionId.replace("stop_worker_", "");
           await this.handleStopWorker(deploymentName, userId, channelId, messageTs, client);
         } else {
-          await client.chat.postEphemeral({
-            channel: channelId,
-            user: userId,
-            text: `Unsupported action: ${actionId}`,
-          });
+          // Log unsupported actions but don't send messages to users
+          logger.info(`Unsupported action: ${actionId} from user ${userId} in channel ${channelId}`);
+          // Silently acknowledge - no user notification needed
         }
+    }
+  }
+
+  /**
+   * Handle executable code block button clicks
+   * Sends the code content back to Claude for execution
+   */
+  private async handleExecutableCodeBlock(
+    actionId: string,
+    userId: string,
+    channelId: string,
+    messageTs: string,
+    body: any,
+    client: any
+  ): Promise<void> {
+    logger.info(`Handling executable code block: ${actionId}`);
+
+    try {
+      // Extract the code from the button's value
+      const action = (body as any).actions?.[0];
+      if (!action?.value) {
+        throw new Error("No code content found in button");
+      }
+
+      const codeContent = action.value;
+      const language = actionId.split('_')[0]; // Extract language from action_id
+      const buttonText = action.text?.text || `Run ${language}`;
+
+      // Post the code execution request as a user message
+      const formattedInput = `> 🚀 *Executed "${buttonText}" button*\n\n\`\`\`${language}\n${codeContent}\n\`\`\``;
+      
+      const inputMessage = await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: messageTs,
+        text: formattedInput,
+        blocks: [
+          {
+            type: "context",
+            elements: [
+              {
+                type: "mrkdwn",
+                text: `<@${userId}> executed "${buttonText}" button`
+              }
+            ]
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `\`\`\`${language}\n${codeContent}\n\`\`\``
+            }
+          }
+        ]
+      });
+      
+      const context = {
+        channelId,
+        userId,
+        userDisplayName: 'Unknown User', // TODO: Get from user info
+        teamId: '', // TODO: Get from body
+        messageTs: inputMessage.ts as string,
+        threadTs: messageTs,
+        text: formattedInput,
+      };
+      
+      await this.handleUserRequest(context, formattedInput, client);
+      
+    } catch (error) {
+      logger.error(`Failed to handle executable code block ${actionId}:`, error);
+      
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: `❌ Failed to execute code: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      });
     }
   }
 
@@ -923,7 +1000,7 @@ export class SlackEventHandlers {
             .map(word => word.charAt(0).toUpperCase() + word.slice(1))
             .join(' ');
           
-          inputs.push(`**${readableLabel}:** ${value}`);
+          inputs.push(`*${readableLabel}:* ${value}`);
         }
       }
     }
@@ -943,6 +1020,14 @@ export class SlackEventHandlers {
   getActiveSessionCount(): number {
     return this.activeSessions.size;
   }
+
+  /**
+   * Get user mappings (for thread response consumer)
+   */
+  getUserMappings(): Map<string, string> {
+    return this.userMappings;
+  }
+
 
   /**
    * Cleanup all sessions

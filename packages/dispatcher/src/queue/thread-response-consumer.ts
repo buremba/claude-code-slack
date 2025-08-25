@@ -2,60 +2,93 @@
 
 import PgBoss from "pg-boss";
 import { WebClient } from "@slack/web-api";
+import type { GitHubRepositoryManager } from "../github/repository-manager";
+import { markdownToSlackBlocks } from "../utils/markdown-to-slack";
 // Simple blockkit detection and conversion for now
-function handleBlockkitContent(content: string): { text: string; blocks?: any[] } {
-  // Look for blockkit pattern: ```blockkit { action: "...", ... }\n{JSON}\n```
-  const blockKitRegex = /```blockkit\s*\{([^}]+)\}\s*\n([\s\S]*?)\n```/g;
+function handleBlockkitContent(content: string, contextInfo?: string): { text: string; blocks?: any[] } {
+  // Look for any code block pattern: ```language { action: "...", ... }\n{content}\n```
+  const codeBlockRegex = /```(\w+)\s*\{([^}]+)\}\s*\n([\s\S]*?)\n```/g;
   let processedContent = content;
   const actionButtons: any[] = [];
-  let hasBlockKit = false;
 
   let match;
-  while ((match = blockKitRegex.exec(content)) !== null) {
-    hasBlockKit = true;
-    const metadataStr = match[1];
-    const jsonContent = match[2];
+  while ((match = codeBlockRegex.exec(content)) !== null) {
+    const language = match[1];
+    const metadataStr = match[2];
+    const codeContent = match[3];
     
     try {
-      // Parse metadata
+      // Parse metadata - handle both comma-separated and space-separated formats
       const metadata: any = {};
       if (metadataStr) {
-        metadataStr.split(',').forEach(pair => {
-          const [key, value] = pair.split(':').map(s => s.trim());
-          if (key && value) {
-            const cleanKey = key.replace(/"/g, '');
-            let cleanValue: any = value.replace(/"/g, '');
-            if (cleanValue === 'true') cleanValue = true;
-            if (cleanValue === 'false') cleanValue = false;
-            metadata[cleanKey] = cleanValue;
-          }
-        });
+        // Try to parse as JSON-like object first
+        try {
+          // Convert to valid JSON format by ensuring proper quotes
+          const jsonStr = `{${metadataStr}}`;
+          const parsed = JSON.parse(jsonStr);
+          Object.assign(metadata, parsed);
+        } catch {
+          // Fallback to comma-separated parsing
+          metadataStr.split(',').forEach(pair => {
+            const [key, value] = pair.split(':').map(s => s.trim());
+            if (key && value) {
+              const cleanKey = key.replace(/"/g, '');
+              let cleanValue: any = value.replace(/"/g, '');
+              if (cleanValue === 'true') cleanValue = true;
+              if (cleanValue === 'false') cleanValue = false;
+              metadata[cleanKey] = cleanValue;
+            }
+          });
+        }
       }
 
-      // Parse JSON blocks
-      const parsed = jsonContent ? JSON.parse(jsonContent.trim()) : { blocks: [] };
-      const blocks = parsed.blocks || [parsed];
-      
-      if (metadata.action) {
-        // Create button for the blockkit form
-        actionButtons.push({
-          type: "button",
-          text: {
-            type: "plain_text",
-            text: metadata.action
-          },
-          action_id: `blockkit_form_${Date.now()}`,
-          value: JSON.stringify({ blocks })
-        });
+      // Only process blocks that have action metadata
+      if (metadata.action || metadata.action_id) {
         
-        // Remove the blockkit from text content
-        processedContent = processedContent.replace(match[0], '');
-      } else if (metadata.show) {
-        // Show blocks directly - but for now, remove from text to avoid duplication
-        processedContent = processedContent.replace(match[0], `[Interactive form: ${metadata.action || 'Form'}]`);
+        if (language === 'blockkit') {
+          // Handle blockkit forms - parse JSON content
+          const parsed = codeContent ? JSON.parse(codeContent.trim()) : { blocks: [] };
+          const blocks = parsed.blocks || [parsed];
+          
+          actionButtons.push({
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: metadata.action
+            },
+            action_id: `blockkit_form_${Date.now()}`,
+            value: JSON.stringify({ blocks })
+          });
+        } else {
+          // Handle executable code blocks (bash, python, etc.)
+          // Skip buttons with values over Slack's 2000 character limit
+          const MAX_BUTTON_VALUE_LENGTH = 2000;
+          if (codeContent && codeContent.length > MAX_BUTTON_VALUE_LENGTH) {
+            logger.warn(`Skipping action button "${metadata.action}" - code content exceeds 2000 character limit (${codeContent.length} chars)`);
+          } else {
+            actionButtons.push({
+              type: "button",
+              text: {
+                type: "plain_text",
+                text: metadata.action
+              },
+              action_id: `${language}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+              value: codeContent
+            });
+          }
+        }
+        
+        // Remove the code block from text content
+        if (metadata.show && language !== 'blockkit') {
+          // Keep the code block visible for show:true
+          processedContent = processedContent.replace(match[0], `\`\`\`${language}\n${codeContent}\n\`\`\``);
+        } else {
+          // Remove the code block from text
+          processedContent = processedContent.replace(match[0], '');
+        }
       }
     } catch (error) {
-      console.error('Failed to parse blockkit:', error);
+      console.error('Failed to parse code block:', error);
       // Keep original content on error
     }
   }
@@ -66,21 +99,7 @@ function handleBlockkitContent(content: string): { text: string; blocks?: any[] 
     .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '_$1_')
     .trim();
 
-  if (!hasBlockKit || actionButtons.length === 0) {
-    // No blockkit, return simple format
-    return {
-      text,
-      blocks: text ? [{
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: text
-        }
-      }] : undefined
-    };
-  }
-
-  // Has blockkit - create blocks with action buttons
+  // Always create blocks structure for consistency
   const blocks: any[] = [];
   
   if (text) {
@@ -93,16 +112,158 @@ function handleBlockkitContent(content: string): { text: string; blocks?: any[] 
     });
   }
 
-  // Add action buttons
-  if (actionButtons.length > 0) {
-    blocks.push({
-      type: "actions",
-      elements: actionButtons
-    });
+  // Add divider and bottom control section (like the worker does)
+  if (actionButtons.length > 0 || contextInfo) {
+    blocks.push({ type: "divider" });
+    
+    // Add context info section if provided
+    if (contextInfo) {
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: contextInfo
+        }
+      });
+    }
+    
+    // Add action buttons if any
+    if (actionButtons.length > 0) {
+      blocks.push({
+        type: "actions",
+        elements: actionButtons
+      });
+    }
   }
 
-  return { text, blocks };
+  return { text, blocks: blocks.length > 0 ? blocks : undefined };
 }
+
+/**
+ * Check if a branch exists on GitHub (regardless of commits)
+ */
+async function branchExistsOnGitHub(
+  repoPath: string, 
+  branchName: string, 
+  githubToken?: string
+): Promise<boolean> {
+  try {
+    if (!githubToken) {
+      logger.debug(`No GitHub token provided for branch check`);
+      return false;
+    }
+
+    // Use GitHub API to check if branch exists
+    const apiUrl = `https://api.github.com/repos/${repoPath}/branches/${encodeURIComponent(branchName)}`;
+    logger.debug(`Checking if branch exists: ${apiUrl}`);
+    
+    const response = await fetch(apiUrl, {
+      headers: {
+        'Authorization': `token ${githubToken}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Claude-Code-Slack-Bot'
+      }
+    });
+
+    if (response.ok) {
+      logger.info(`Branch ${branchName} exists on GitHub`);
+      return true;
+    } else if (response.status === 404) {
+      logger.debug(`Branch ${branchName} not found (404)`);
+      return false;
+    } else {
+      logger.warn(`GitHub API error checking branch existence: ${response.status} ${response.statusText}`);
+      return false;
+    }
+    
+  } catch (error) {
+    logger.error('Error checking branch existence:', error);
+    return false;
+  }
+}
+
+/**
+ * Generate GitHub action buttons for the session branch
+ */
+async function generateGitHubActionButtons(
+  userId: string,
+  threadTs: string,
+  userMappings: Map<string, string>,
+  repoManager: GitHubRepositoryManager
+): Promise<any[] | undefined> {
+  try {
+    logger.debug(`Generating GitHub action buttons for user ${userId}, thread ${threadTs}`);
+    
+    // Get GitHub username from Slack user ID
+    const githubUsername = userMappings.get(userId);
+    if (!githubUsername) {
+      logger.debug(`No GitHub username mapping found for user ${userId}`);
+      return undefined;
+    }
+
+    // Get repository information
+    const repository = await repoManager.getRepositoryInfo(githubUsername);
+    if (!repository) {
+      logger.debug(`No repository found for GitHub user ${githubUsername}`);
+      return undefined;
+    }
+
+    // Generate session branch name (same logic as worker)  
+    // Worker creates branches like "claude/sessionKey" where sessionKey has dots replaced with dashes
+    const sessionKey = threadTs;
+    const workerBranchName = `claude/${sessionKey.replace(/\./g, "-")}`;
+    
+    // Also check for legacy session format (fallback for older branches)
+    const legacyBranchName = `claude/session-${sessionKey.replace(/\./g, "-")}`;
+    
+    const repoUrl = repository.repositoryUrl;
+    const repoPath = repoUrl.replace('https://github.com/', '');
+    
+    // Try both branch naming formats - prioritize worker format first
+    logger.debug(`Checking branches in repo ${repoPath}: ${workerBranchName} or ${legacyBranchName}`);
+    
+    // Check if branch exists on GitHub (regardless of commits)
+    // Get GitHub token from environment for API calls
+    const githubToken = process.env.GITHUB_TOKEN;
+    
+    // Try both branch formats - worker format first, then legacy fallback
+    let branchExists = await branchExistsOnGitHub(repoPath, workerBranchName, githubToken);
+    let actualBranchName = workerBranchName;
+    
+    if (!branchExists) {
+      // Try legacy format (fallback for older branches)
+      branchExists = await branchExistsOnGitHub(repoPath, legacyBranchName, githubToken);
+      if (branchExists) {
+        actualBranchName = legacyBranchName;
+      }
+    }
+    
+    if (!branchExists) {
+      // Neither branch format exists, but show Edit button optimistically for the worker format
+      // This handles cases where the worker is still creating the branch
+      logger.info(`Branch not found yet, showing Edit button optimistically for ${workerBranchName}`);
+      actualBranchName = workerBranchName;
+    } else {
+      logger.info(`Showing Edit button for existing branch ${actualBranchName}`);
+    }
+    return [
+      {
+        type: "button",
+        text: {
+          type: "plain_text",
+          text: "Edit",
+          emoji: true
+        },
+        url: `https://github.dev/${repoPath}/tree/${actualBranchName}`,
+        style: "primary"
+      }
+    ];
+  } catch (error) {
+    // Return undefined on error - this will result in no action buttons being added
+    return undefined;
+  }
+}
+
 import logger from "../logger";
 
 interface ThreadResponsePayload {
@@ -126,13 +287,19 @@ export class ThreadResponseConsumer {
   private pgBoss: PgBoss;
   private slackClient: WebClient;
   private isRunning = false;
+  private repoManager: GitHubRepositoryManager;
+  private userMappings: Map<string, string>; // slackUserId -> githubUsername
 
   constructor(
     connectionString: string,
-    slackToken: string
+    slackToken: string,
+    repoManager: GitHubRepositoryManager,
+    userMappings: Map<string, string>
   ) {
     this.pgBoss = new PgBoss(connectionString);
     this.slackClient = new WebClient(slackToken);
+    this.repoManager = repoManager;
+    this.userMappings = userMappings;
   }
 
   /**
@@ -282,9 +449,33 @@ export class ThreadResponseConsumer {
         logger.info(`Thread processing completed for message ${data.messageId}`);
       }
 
-    } catch (error) {
+    } catch (error: any) {
+      // Check if it's a validation error that shouldn't be retried
+      if (error?.data?.error === "invalid_blocks" || 
+          error?.data?.error === "msg_too_long" ||
+          error?.code === "slack_webapi_platform_error") {
+        logger.error(`Slack validation error in job ${job.id}: ${error?.data?.error || error.message}`);
+        
+        // Try to inform the user about the validation error
+        if (data && data.channelId && data.messageId) {
+          try {
+            await this.slackClient.chat.update({
+              channel: data.channelId,
+              ts: data.messageId,
+              text: `❌ **Message update failed**\n\n**Error:** ${error?.data?.error || error.message}\n\nThe response may contain invalid formatting or be too long for Slack.`
+            });
+            logger.info(`Notified user about validation error in job ${job.id}`);
+          } catch (notifyError) {
+            logger.error(`Failed to notify user about validation error: ${notifyError}`);
+          }
+        }
+        
+        // Don't throw - mark job as complete to prevent retry loops
+        return;
+      }
+      
       logger.error(`Failed to process thread response job ${job.id}:`, error);
-      throw error; // Let pgboss handle retry logic
+      throw error; // Let pgboss handle retry logic for other errors
     }
   }
 
@@ -293,7 +484,7 @@ export class ThreadResponseConsumer {
    * Handle message content updates
    */
   private async handleMessageUpdate(data: ThreadResponsePayload): Promise<void> {
-    const { content, channelId, threadTs } = data;
+    const { content, channelId, threadTs, userId } = data;
     
     if (!content) return;
 
@@ -301,18 +492,56 @@ export class ThreadResponseConsumer {
       logger.info(`Updating message in channel ${channelId}, thread ${threadTs}`);
       
       // Convert markdown to Slack format with blockkit support
-      const slackMessage = handleBlockkitContent(content);
+      const slackMessage = markdownToSlackBlocks(content);
+      
+      // Add action buttons from code blocks (if any)
+      const actionButtonResult = handleBlockkitContent(content);
+      
+      // Get GitHub action buttons for this session
+      const githubActionButtons = await generateGitHubActionButtons(userId, threadTs, this.userMappings, this.repoManager);
+      
+      // Collect all action buttons
+      const allActionButtons: any[] = [];
+      if (actionButtonResult.blocks) {
+        // Extract action buttons from the blockkit handler
+        for (const block of actionButtonResult.blocks) {
+          if (block.type === "actions") {
+            allActionButtons.push(...block.elements);
+          }
+        }
+      }
+      if (githubActionButtons) {
+        allActionButtons.push(...githubActionButtons);
+      }
+      
+      // Add action buttons section if we have any buttons
+      if (allActionButtons.length > 0) {
+        slackMessage.blocks = slackMessage.blocks || [];
+        slackMessage.blocks.push({ type: "divider" });
+        slackMessage.blocks.push({
+          type: "actions",
+          elements: allActionButtons
+        });
+      }
+      
+      // Truncate text to Slack's limit (3000 chars for text field)
+      const MAX_TEXT_LENGTH = 3000;
+      const truncatedText = (slackMessage.text || content).length > MAX_TEXT_LENGTH 
+        ? (slackMessage.text || content).substring(0, MAX_TEXT_LENGTH - 20) + '\n...[truncated]'
+        : (slackMessage.text || content);
       
       const updateOptions: any = {
         channel: channelId,
         ts: threadTs,
-        text: slackMessage.text || content,
+        text: truncatedText,
         mrkdwn: true,
       };
       
       // Add blocks if we have them (blockkit parser handles all the complexity)
+      // Limit to 50 blocks (Slack's limit)
       if (slackMessage.blocks && slackMessage.blocks.length > 0) {
-        updateOptions.blocks = slackMessage.blocks;
+        const MAX_BLOCKS = 50;
+        updateOptions.blocks = slackMessage.blocks.slice(0, MAX_BLOCKS);
       }
       
       const result = await this.slackClient.chat.update(updateOptions);
@@ -330,6 +559,22 @@ export class ThreadResponseConsumer {
         logger.error("Slack channel not found - bot may not have access");
       } else if (error.code === "not_in_channel") {
         logger.error("Bot is not in the channel");
+      } else if (error.data?.error === "invalid_blocks" || error.data?.error === "msg_too_long") {
+        // These are Slack validation errors - retrying won't help
+        logger.error(`Slack validation error: ${error.data?.error}`);
+        
+        // Try to send a simple error message instead
+        try {
+          await this.slackClient.chat.update({
+            channel: channelId,
+            ts: threadTs,
+            text: `❌ **Error occurred while updating message**\n\n**Error:** ${error.data?.error || error.message}\n\nThe response may be too long or contain invalid formatting.`
+          });
+          logger.info(`Sent fallback error message to user for validation error: ${error.data?.error}`);
+        } catch (fallbackError) {
+          logger.error("Failed to send fallback error message:", fallbackError);
+        }
+        // Don't throw - this prevents retry loops for validation errors
       } else {
         logger.error(`Failed to update Slack message: ${error.message}`);
         throw error;
@@ -341,7 +586,7 @@ export class ThreadResponseConsumer {
    * Handle error messages
    */
   private async handleError(data: ThreadResponsePayload): Promise<void> {
-    const { error, channelId, threadTs } = data;
+    const { error, channelId, threadTs, userId } = data;
     
     if (!error) return;
 
@@ -351,7 +596,20 @@ export class ThreadResponseConsumer {
       const errorContent = `❌ **Error occurred**\n\n**Error:** \`${error}\``;
       
       // Convert markdown to Slack format with blockkit support
-      const slackMessage = handleBlockkitContent(errorContent);
+      const slackMessage = markdownToSlackBlocks(errorContent);
+      
+      // Get GitHub action buttons for this session
+      const githubActionButtons = await generateGitHubActionButtons(userId, threadTs, this.userMappings, this.repoManager);
+      
+      // Add action buttons section if we have any buttons
+      if (githubActionButtons && githubActionButtons.length > 0) {
+        slackMessage.blocks = slackMessage.blocks || [];
+        slackMessage.blocks.push({ type: "divider" });
+        slackMessage.blocks.push({
+          type: "actions",
+          elements: githubActionButtons
+        });
+      }
       
       const updateOptions: any = {
         channel: channelId,

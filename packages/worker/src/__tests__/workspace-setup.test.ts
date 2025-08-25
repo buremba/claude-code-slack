@@ -60,8 +60,10 @@ describe("Workspace Setup", () => {
   });
 
   afterEach(() => {
-    // Clean up any mock timers
-    jest.clearAllTimers();
+    // Clean up any mock timers (if available)
+    if (typeof jest !== 'undefined' && jest.clearAllTimers) {
+      jest.clearAllTimers();
+    }
   });
 
   describe("Directory Setup", () => {
