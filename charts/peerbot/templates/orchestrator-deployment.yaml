@@ -102,6 +102,10 @@ spec:
         - name: WORKER_MEMORY_LIMIT
           value: {{ .Values.worker.resources.limits.memory }}
         
+        # Worker timeout configuration
+        - name: WORKER_EXIT_ON_IDLE_MINUTES
+          value: "{{ .Values.worker.exitOnIdleMinutes | default 1 }}"
+        
         # KEDA configuration
         - name: KEDA_POLLING_INTERVAL
           value: "{{ .Values.keda.worker.pollingInterval | default 15 }}"
