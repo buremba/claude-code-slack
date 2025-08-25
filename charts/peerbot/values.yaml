@@ -415,3 +415,16 @@ podSecurityStandards:
   enforce: "restricted"
   audit: "restricted"
   warn: "restricted"
+
+# Worker cleanup configuration
+workerCleanup:
+  enabled: true
+  maxAgeMinutes: 60  # Clean up worker deployments older than 1 hour
+  cleanupPVCs: false  # Set to true to also clean up orphaned PVCs
+  kubectlVersion: "latest"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+
+# GCS configuration (for network policy)
+gcs:
+  customPorts: []  # Additional ports for GCS if needed
