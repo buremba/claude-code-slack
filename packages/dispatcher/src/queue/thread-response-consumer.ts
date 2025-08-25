@@ -139,60 +139,24 @@ function handleBlockkitContent(content: string, contextInfo?: string): { text: s
   return { text, blocks: blocks.length > 0 ? blocks : undefined };
 }
 
-/**
- * Check if a branch exists on GitHub (regardless of commits)
- */
-async function branchExistsOnGitHub(
-  repoPath: string, 
-  branchName: string, 
-  githubToken?: string
-): Promise<boolean> {
-  try {
-    if (!githubToken) {
-      logger.debug(`No GitHub token provided for branch check`);
-      return false;
-    }
-
-    // Use GitHub API to check if branch exists
-    const apiUrl = `https://api.github.com/repos/${repoPath}/branches/${encodeURIComponent(branchName)}`;
-    logger.debug(`Checking if branch exists: ${apiUrl}`);
-    
-    const response = await fetch(apiUrl, {
-      headers: {
-        'Authorization': `token ${githubToken}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'Claude-Code-Slack-Bot'
-      }
-    });
-
-    if (response.ok) {
-      logger.info(`Branch ${branchName} exists on GitHub`);
-      return true;
-    } else if (response.status === 404) {
-      logger.debug(`Branch ${branchName} not found (404)`);
-      return false;
-    } else {
-      logger.warn(`GitHub API error checking branch existence: ${response.status} ${response.statusText}`);
-      return false;
-    }
-    
-  } catch (error) {
-    logger.error('Error checking branch existence:', error);
-    return false;
-  }
-}
 
 /**
  * Generate GitHub action buttons for the session branch
  */
 async function generateGitHubActionButtons(
   userId: string,
-  threadTs: string,
+  gitBranch: string | undefined,
   userMappings: Map<string, string>,
   repoManager: GitHubRepositoryManager
 ): Promise<any[] | undefined> {
   try {
-    logger.debug(`Generating GitHub action buttons for user ${userId}, thread ${threadTs}`);
+    logger.debug(`Generating GitHub action buttons for user ${userId}, gitBranch: ${gitBranch}`);
+    
+    // If no git branch provided, don't show Edit button
+    if (!gitBranch) {
+      logger.debug(`No git branch provided, skipping Edit button`);
+      return undefined;
+    }
     
     // Get GitHub username from Slack user ID
     const githubUsername = userMappings.get(userId);
@@ -208,44 +172,10 @@ async function generateGitHubActionButtons(
       return undefined;
     }
 
-    // Generate session branch name (same logic as worker)  
-    // Worker creates branches like "claude/sessionKey" where sessionKey has dots replaced with dashes
-    const sessionKey = threadTs;
-    const workerBranchName = `claude/${sessionKey.replace(/\./g, "-")}`;
-    
-    // Also check for legacy session format (fallback for older branches)
-    const legacyBranchName = `claude/session-${sessionKey.replace(/\./g, "-")}`;
-    
     const repoUrl = repository.repositoryUrl;
     const repoPath = repoUrl.replace('https://github.com/', '');
     
-    // Try both branch naming formats - prioritize worker format first
-    logger.debug(`Checking branches in repo ${repoPath}: ${workerBranchName} or ${legacyBranchName}`);
-    
-    // Check if branch exists on GitHub (regardless of commits)
-    // Get GitHub token from environment for API calls
-    const githubToken = process.env.GITHUB_TOKEN;
-    
-    // Try both branch formats - worker format first, then legacy fallback
-    let branchExists = await branchExistsOnGitHub(repoPath, workerBranchName, githubToken);
-    let actualBranchName = workerBranchName;
-    
-    if (!branchExists) {
-      // Try legacy format (fallback for older branches)
-      branchExists = await branchExistsOnGitHub(repoPath, legacyBranchName, githubToken);
-      if (branchExists) {
-        actualBranchName = legacyBranchName;
-      }
-    }
-    
-    if (!branchExists) {
-      // Neither branch format exists, but show Edit button optimistically for the worker format
-      // This handles cases where the worker is still creating the branch
-      logger.info(`Branch not found yet, showing Edit button optimistically for ${workerBranchName}`);
-      actualBranchName = workerBranchName;
-    } else {
-      logger.info(`Showing Edit button for existing branch ${actualBranchName}`);
-    }
+    logger.info(`Showing Edit button for branch: ${gitBranch}`);
     return [
       {
         type: "button",
@@ -254,7 +184,7 @@ async function generateGitHubActionButtons(
           text: "Edit",
           emoji: true
         },
-        url: `https://github.dev/${repoPath}/tree/${actualBranchName}`,
+        url: `https://github.dev/${repoPath}/tree/${gitBranch}`,
         style: "primary"
       }
     ];
@@ -277,6 +207,7 @@ interface ThreadResponsePayload {
   error?: string;
   timestamp: number;
   originalMessageTs?: string; // User's original message timestamp for reactions
+  gitBranch?: string; // Current git branch for Edit button URLs
 }
 
 /**
@@ -498,7 +429,7 @@ export class ThreadResponseConsumer {
       const actionButtonResult = handleBlockkitContent(content);
       
       // Get GitHub action buttons for this session
-      const githubActionButtons = await generateGitHubActionButtons(userId, threadTs, this.userMappings, this.repoManager);
+      const githubActionButtons = await generateGitHubActionButtons(userId, data.gitBranch, this.userMappings, this.repoManager);
       
       // Collect all action buttons
       const allActionButtons: any[] = [];
@@ -599,7 +530,7 @@ export class ThreadResponseConsumer {
       const slackMessage = markdownToSlackBlocks(errorContent);
       
       // Get GitHub action buttons for this session
-      const githubActionButtons = await generateGitHubActionButtons(userId, threadTs, this.userMappings, this.repoManager);
+      const githubActionButtons = await generateGitHubActionButtons(userId, data.gitBranch, this.userMappings, this.repoManager);
       
       // Add action buttons section if we have any buttons
       if (githubActionButtons && githubActionButtons.length > 0) {

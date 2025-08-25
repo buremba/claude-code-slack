@@ -11,7 +11,7 @@ export interface OrchestratorConfig {
     connectionString: string;
     retryLimit: number;
     retryDelay: number;
-    expireInHours: number;
+    expireInSeconds: number;
   };
   worker: {
     image: {

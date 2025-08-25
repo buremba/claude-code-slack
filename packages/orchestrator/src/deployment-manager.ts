@@ -122,7 +122,7 @@ export class DeploymentManager {
           labels: {
             'app.kubernetes.io/name': 'peerbot',
             'app.kubernetes.io/component': 'worker',
-            'peerbot.io/managed-by': 'orchestrator'
+            'peerbot/managed-by': 'orchestrator'
           }
         },
         type: 'Opaque',
@@ -193,7 +193,7 @@ export class DeploymentManager {
         labels: {
           'app.kubernetes.io/name': 'peerbot',
           'app.kubernetes.io/component': 'worker',
-          'peerbot.io/managed-by': 'orchestrator'
+          'peerbot/managed-by': 'orchestrator'
         }
       },
       spec: {
@@ -284,36 +284,8 @@ export class DeploymentManager {
                 {
                   name: 'WORKSPACE_PATH',
                   value: '/workspace'
-                },
-                // Exit timeout configuration - exit after idle period
-                {
-                  name: 'EXIT_ON_IDLE_MINUTES',
-                  value: process.env.WORKER_EXIT_ON_IDLE_MINUTES || '10'
                 }
               ],
-              ports: [{
-                name: 'health',
-                containerPort: 8080,
-                protocol: 'TCP'
-              }],
-              livenessProbe: {
-                httpGet: {
-                  path: '/health',
-                  port: 'health'
-                },
-                initialDelaySeconds: 30,
-                timeoutSeconds: 10,
-                periodSeconds: 30
-              },
-              readinessProbe: {
-                httpGet: {
-                  path: '/ready',
-                  port: 'health'
-                },
-                initialDelaySeconds: 15,
-                timeoutSeconds: 5,
-                periodSeconds: 10
-              },
               resources: {
                 requests: this.config.worker.resources.requests,
                 limits: this.config.worker.resources.limits

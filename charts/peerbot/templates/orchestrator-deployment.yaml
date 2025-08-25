@@ -102,22 +102,6 @@ spec:
         - name: WORKER_MEMORY_LIMIT
           value: {{ .Values.worker.resources.limits.memory }}
         
-        # Worker timeout configuration
-        - name: WORKER_EXIT_ON_IDLE_MINUTES
-          value: "{{ .Values.worker.exitOnIdleMinutes | default 1 }}"
-        
-        # KEDA configuration
-        - name: KEDA_POLLING_INTERVAL
-          value: "{{ .Values.keda.worker.pollingInterval | default 15 }}"
-        - name: KEDA_COOLDOWN_PERIOD
-          value: "{{ .Values.keda.worker.cooldownPeriod | default 120 }}"
-        - name: KEDA_MIN_REPLICAS
-          value: "{{ .Values.keda.worker.minReplicas | default 0 }}"
-        - name: KEDA_MAX_REPLICAS
-          value: "{{ .Values.keda.worker.maxReplicas | default 10 }}"
-        - name: KEDA_JOB_THRESHOLD
-          value: "{{ .Values.keda.worker.jobThreshold | default 1 }}"
-        
         # Kubernetes configuration
         - name: KUBERNETES_NAMESPACE
           value: {{ .Values.kubernetes.namespace }}

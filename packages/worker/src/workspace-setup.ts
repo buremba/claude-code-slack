@@ -201,7 +201,7 @@ export class WorkspaceManager {
       logger.info(`Setting up git configuration for ${username}...`);
       
       // Set user name and email
-      await execAsync(`git config user.name "Claude Code Bot (${username})"`, {
+      await execAsync(`git config user.name "Peerbot"`, {
         cwd: repositoryDirectory,
       });
       
@@ -354,6 +354,18 @@ export class WorkspaceManager {
           cwd: this.workspaceInfo.userDirectory,
         });
         logger.info(`Session branch ${branchName} already exists locally, checked out`);
+        
+        // Pull latest changes from remote to preserve previous work
+        try {
+          await execAsync(`git pull origin "${branchName}"`, {
+            cwd: this.workspaceInfo.userDirectory,
+            timeout: 30000
+          });
+          logger.info(`Pulled latest changes for session branch ${branchName}`);
+        } catch (pullError) {
+          // If pull fails, branch might not exist on remote yet - that's okay for new branches
+          logger.warn(`Failed to pull latest changes for ${branchName} (branch might be new):`, pullError);
+        }
       } catch (checkoutError) {
         // Branch doesn't exist locally, check remote
         try {
@@ -367,7 +379,7 @@ export class WorkspaceManager {
             await execAsync(`git checkout -b "${branchName}" "origin/${branchName}"`, {
               cwd: this.workspaceInfo.userDirectory,
             });
-            logger.info(`Session branch ${branchName} exists on remote, checked out`);
+            logger.info(`Session branch ${branchName} exists on remote, checked out with latest changes`);
           } else {
             // Branch doesn't exist anywhere, create new
             await execAsync(`git checkout -b "${branchName}"`, {

@@ -1,4 +1,5 @@
 import PgBoss from 'pg-boss';
+import * as k8s from '@kubernetes/client-node';
 import { 
   OrchestratorConfig, 
   WorkerDeploymentRequest, 
@@ -21,11 +22,12 @@ export class QueueConsumer {
       connectionString: config.queues.connectionString,
       retryLimit: config.queues.retryLimit,
       retryDelay: config.queues.retryDelay,
-      expireInHours: config.queues.expireInHours,
+      expireInSeconds: config.queues.expireInSeconds,
       retentionDays: 7,
       deleteAfterDays: 30,
       monitorStateIntervalSeconds: 60,
-      maintenanceIntervalSeconds: 300
+      maintenanceIntervalSeconds: 30,
+      supervise: true  // Explicitly enable maintenance and monitoring
     });
   }
 
@@ -158,7 +160,7 @@ export class QueueConsumer {
           timestamp: new Date().toISOString()
         }
       }, {
-        expireInHours: this.config.queues.expireInHours,
+        expireInSeconds: this.config.queues.expireInSeconds,
         retryLimit: this.config.queues.retryLimit,
         retryDelay: this.config.queues.retryDelay,
         priority: 10 // Thread messages have high priority
@@ -195,9 +197,118 @@ export class QueueConsumer {
         return;
       }
 
-      // Cleanup logic removed - using simple thread-based deployments now
-      console.log('Cleanup task running (no-op for thread-based deployments)');
-    }, 10 * 60 * 1000); // Run every 10 minutes
+      console.log('🧹 Running worker deployment cleanup task...');
+      try {
+        await this.cleanupIdleWorkerDeployments();
+      } catch (error) {
+        console.error('Error during cleanup task:', error);
+      }
+    }, 5 * 60 * 1000); // Run every 5 minutes
+  }
+
+  /**
+   * Clean up idle worker deployments
+   */
+  private async cleanupIdleWorkerDeployments(): Promise<void> {
+    try {
+      // Get all worker deployments
+      const k8sApi = new k8s.AppsV1Api();
+      const { body } = await k8sApi.listNamespacedDeployment(
+        'peerbot',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'app.kubernetes.io/component=worker'
+      );
+
+      const now = Date.now();
+      const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+      for (const deployment of body.items) {
+        if (!deployment.metadata?.name?.startsWith('peerbot-worker-')) {
+          continue;
+        }
+
+        // Check deployment age
+        const creationTime = new Date(deployment.metadata.creationTimestamp!).getTime();
+        const ageMs = now - creationTime;
+
+        // Check if deployment has been idle for too long OR has ttl annotation for immediate cleanup
+        const shouldCleanup = ageMs > IDLE_TIMEOUT_MS || 
+                             deployment.metadata?.annotations?.['peerbot/cleanup'] === 'true';
+
+        if (shouldCleanup) {
+          // Check if deployment is actually idle by looking at pod status
+          const isIdle = await this.isWorkerDeploymentIdle(deployment.metadata.name);
+          
+          if (isIdle) {
+            console.log(`🗑️  Cleaning up idle worker deployment: ${deployment.metadata.name} (age: ${Math.round(ageMs / 60000)}m)`);
+            
+            try {
+              await k8sApi.deleteNamespacedDeployment(
+                deployment.metadata.name,
+                'peerbot',
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'Background'
+              );
+              console.log(`✅ Successfully cleaned up deployment: ${deployment.metadata.name}`);
+            } catch (deleteError) {
+              console.error(`❌ Failed to delete deployment ${deployment.metadata.name}:`, deleteError);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error during worker deployment cleanup:', error);
+    }
+  }
+
+  /**
+   * Check if a worker deployment is idle
+   */
+  private async isWorkerDeploymentIdle(deploymentName: string): Promise<boolean> {
+    try {
+      const coreApi = new k8s.CoreV1Api();
+      const { body: pods } = await coreApi.listNamespacedPod(
+        'peerbot',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        `app=${deploymentName}`
+      );
+
+      // If no pods exist, deployment is idle
+      if (pods.items.length === 0) {
+        return true;
+      }
+
+      // Check pod status - if all pods are not running or failing, consider idle
+      const runningPods = pods.items.filter((pod: k8s.V1Pod) => 
+        pod.status?.phase === 'Running' && 
+        pod.status?.containerStatuses?.every((c: k8s.V1ContainerStatus) => c.ready)
+      );
+
+      // If no healthy running pods, deployment is idle
+      if (runningPods.length === 0) {
+        return true;
+      }
+
+      // Additional check: look at container restarts - high restart count might indicate problems
+      const hasHighRestarts = pods.items.some((pod: k8s.V1Pod) =>
+        pod.status?.containerStatuses?.some((c: k8s.V1ContainerStatus) => (c.restartCount || 0) > 3)
+      );
+
+      return hasHighRestarts;
+    } catch (error) {
+      console.error(`Error checking if deployment ${deploymentName} is idle:`, error);
+      // If we can't check, assume it's not idle (safer)
+      return false;
+    }
   }
 
   /**

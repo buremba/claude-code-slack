@@ -11,7 +11,7 @@ export { ClaudeWorker } from "./claude-worker";
  * Main entry point - now supports both queue-based and legacy workers
  */
 async function main() {  
-    logger.info("🔄 Starting in queue mode (simple deployment-based persistent worker)");
+    logger.info("🔄 Starting in queue mode (dynamic deployment-based persistent worker)");
     
     // Get user ID and optional target thread from environment
     const userId = process.env.USER_ID;

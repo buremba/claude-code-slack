@@ -55,7 +55,7 @@ Enable Workload Identity for secure GCS access:
 ```bash
 # Create Google Service Account
 gcloud iam service-accounts create claude-code-bot \
-  --display-name="Claude Code Bot" \
+  --display-name="Peerbot" \
   --project=$PROJECT_ID
 
 # Grant GCS permissions

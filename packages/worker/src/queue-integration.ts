@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import PgBoss from "pg-boss";
+import { execSync } from "child_process";
 import logger from "./logger";
 
 interface TodoItem {
@@ -19,6 +20,7 @@ interface ThreadResponsePayload {
   error?: string;
   timestamp: number;
   originalMessageTs?: string; // User's original message timestamp for reactions
+  gitBranch?: string; // Current git branch for Edit button URLs
 }
 
 export class QueueIntegration {
@@ -190,6 +192,46 @@ export class QueueIntegration {
   }
 
   /**
+   * Get the current git branch name only if it has commits
+   */
+  private getCurrentGitBranch(): string | undefined {
+    try {
+      // Use the workspace directory if USER_ID is available, otherwise fall back to process.cwd()
+      const workspaceDir = process.env.USER_ID ? `/workspace/${process.env.USER_ID}` : process.cwd();
+      
+      const branch = execSync('git branch --show-current', { 
+        encoding: 'utf-8',
+        cwd: workspaceDir
+      }).trim();
+      
+      if (!branch) {
+        return undefined;
+      }
+      
+      // Check if the branch has any commits
+      try {
+        execSync('git log -1 --oneline', {
+          encoding: 'utf-8',
+          cwd: workspaceDir,
+          stdio: 'pipe' // Suppress output
+        });
+        
+        // If we get here, there are commits in the branch
+        logger.info(`Git branch with commits detected: ${branch}`);
+        return branch;
+      } catch (logError) {
+        // No commits in the branch yet
+        logger.debug(`Git branch ${branch} has no commits yet, skipping gitBranch field`);
+        return undefined;
+      }
+      
+    } catch (error) {
+      logger.warn('Could not get current git branch:', error);
+      return undefined;
+    }
+  }
+
+  /**
    * Perform the actual queue update
    */
   private async performUpdate(content: string): Promise<void> {
@@ -220,7 +262,8 @@ export class QueueIntegration {
         content: content,
         isDone: false, // Agent is still running
         timestamp: Date.now(),
-        originalMessageTs: process.env.ORIGINAL_MESSAGE_TS // User's original message for reactions
+        originalMessageTs: process.env.ORIGINAL_MESSAGE_TS, // User's original message for reactions
+        gitBranch: this.getCurrentGitBranch() // Current git branch for Edit button URLs
       };
 
       // Send to thread_response queue
@@ -250,8 +293,7 @@ export class QueueIntegration {
       if (this.currentTodos.length > 0) {
         await this.updateProgressWithTodos();
       } else {
-        // Post a temporary "typing" message that we'll update
-        await this.updateProgress("💭 Claude is thinking...");
+        await this.updateProgress("💭 Peerbot is thinking...");
       }
 
     } catch (error) {
@@ -277,7 +319,8 @@ export class QueueIntegration {
         content: finalMessage,
         isDone: true, // Agent is done
         timestamp: Date.now(),
-        originalMessageTs: process.env.ORIGINAL_MESSAGE_TS // User's original message for reactions
+        originalMessageTs: process.env.ORIGINAL_MESSAGE_TS, // User's original message for reactions
+        gitBranch: this.getCurrentGitBranch() // Current git branch for Edit button URLs
       };
 
       const jobId = await this.pgBoss.send('thread_response', payload, {
@@ -313,7 +356,8 @@ export class QueueIntegration {
         error: error.message,
         isDone: true, // Agent is done due to error
         timestamp: Date.now(),
-        originalMessageTs: process.env.ORIGINAL_MESSAGE_TS // User's original message for reactions
+        originalMessageTs: process.env.ORIGINAL_MESSAGE_TS, // User's original message for reactions
+        gitBranch: this.getCurrentGitBranch() // Current git branch for Edit button URLs
       };
 
       const jobId = await this.pgBoss.send('thread_response', payload, {
@@ -420,8 +464,10 @@ export class QueueIntegration {
   private formatTodoList(todos: TodoItem[]): string {
     const todoLines = todos.map(todo => {
       const checkbox = todo.status === "completed" ? "☑️" : "☐";
-      const status = todo.status === "in_progress" ? " (in progress)" : "";
-      return `${checkbox} ${todo.content}${status}`;
+      if(todo.status === "in_progress") {
+        return `🪚 *${todo.content}*`;
+      }
+      return `${checkbox} ${todo.content}`;
     });
 
     return `📝 **Task Progress**\n\n${todoLines.join('\n')}`;

@@ -341,12 +341,12 @@ ${this.getMakeTargetsSummary()}
 **Guidelines:**
 - Branch: claude/${this.config.sessionKey.replace(/\./g, "-")}
 - IMPORTANT: After making any code changes, you MUST commit and push them using git commands (git add, git commit, git push).
-- Push only to this branch (no PR creation, the user has to create PR manually).
+- Push only to this branch (no PR creation, the user has to create PR manually) include the PR creation link in the message (https://github.com/[CURRENT_REPO_OWNER]/[CURRENT_REPO_NAME]/compare/[TARGET_ORIGIN_BRANCH]...[CURRENT_BRANCH]) or ask the user to click "Edit" button below.
 - Focus on the user's request.
 - Always prefer numbered lists over bullet points.
 
 **Instructions:**
-1. New project: create a folder in the current directory; ask for name, tech stack (dbname,providername,apiservicename etc.) in a form and autopopulate if provided. Collect secrets if needed. Deployment types are Node.js/bun, Python/uv, Docker, Docker Compose, Cloudflare (install flarectl and ask for personal access token.).
+1. New project: create a folder in the root directory; ask for name, tech stack (dbname,providername,apiservicename etc.) in a form and autopopulate if provided. Collect secrets if needed. Deployment types are Node.js/bun, Python/uv, Docker, Docker Compose, Cloudflare (install flarectl and ask for personal access token.).
 2. Feature/bug: if no Makefile in current dir, show a dropdown of folders containing a Makefile in a form; user selects one; set the current directory to the selected folder.
 3. Secrets: if required, collect values via form and map to .env file before running make commands.
 4. New persona: If the user says he wants to create subagent/persona, create a Claude subagent on .claude/agents/agent-name.md and in there add it's traits based on the form values the user enters.

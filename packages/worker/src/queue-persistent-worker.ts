@@ -20,8 +20,6 @@ export class QueuePersistentClaudeWorker {
   private queueConsumer: WorkerQueueConsumer;
   private userId: string;
   private targetThreadId?: string;
-  private lastActivity: number = Date.now();
-  private timeoutMinutes: number = 30; // Worker can exit after inactivity, deployment stays up 5 more minutes
   private isInitialized = false;
 
   constructor(userId: string, targetThreadId?: string) {
@@ -30,7 +28,6 @@ export class QueuePersistentClaudeWorker {
     
     // Load initial configuration from environment
     this.config = this.loadConfigFromEnv();
-    this.timeoutMinutes = parseInt(process.env.SESSION_TIMEOUT_MINUTES || "30");
     
     // Get deployment name from environment
     const deploymentName = process.env.DEPLOYMENT_NAME;
@@ -53,7 +50,6 @@ export class QueuePersistentClaudeWorker {
     if (this.targetThreadId) {
       logger.info(`- Target Thread: ${this.targetThreadId}`);
     }
-    logger.info(`- Session timeout: ${this.timeoutMinutes} minutes`);
   }
 
   private buildConnectionString(): string {
@@ -96,14 +92,7 @@ export class QueuePersistentClaudeWorker {
     try {
       // Start queue consumer (this will handle message processing)
       await this.queueConsumer.start();
-      
-      // Process initial message if provided via environment (for first message in thread)
-      if (process.env.INITIAL_USER_PROMPT) {
-        await this.processInitialMessage();
-      }
-      
-      // Start timeout monitor
-      this.startTimeoutMonitor();
+  
       
       this.isInitialized = true;
       logger.info(`✅ Queue-based persistent worker started successfully`);
@@ -112,77 +101,6 @@ export class QueuePersistentClaudeWorker {
       logger.error("Failed to start queue-based persistent worker:", error);
       process.exit(1);
     }
-  }
-
-  /**
-   * Process initial message from environment variables
-   * This handles the first message that creates the worker deployment
-   */
-  private async processInitialMessage(): Promise<void> {
-    try {
-      logger.info("Processing initial message from environment...");
-      
-      const initialConfig = {
-        ...this.config,
-        userPrompt: process.env.INITIAL_USER_PROMPT!,
-        slackResponseChannel: process.env.INITIAL_SLACK_RESPONSE_CHANNEL!,
-        slackResponseTs: process.env.INITIAL_SLACK_RESPONSE_TS!,
-        claudeOptions: process.env.INITIAL_CLAUDE_OPTIONS || "{}",
-        resumeSessionId: process.env.INITIAL_RESUME_SESSION_ID,
-      };
-
-      // Set ORIGINAL_MESSAGE_TS for reactions
-      if (process.env.INITIAL_ORIGINAL_MESSAGE_TS) {
-        process.env.ORIGINAL_MESSAGE_TS = process.env.INITIAL_ORIGINAL_MESSAGE_TS;
-      }
-
-      // Create and execute worker for initial message
-      this.worker = new ClaudeWorker(initialConfig);
-      await this.worker.execute();
-      
-      logger.info("✅ Initial message processed successfully");
-      
-    } catch (error) {
-      logger.error("❌ Error processing initial message:", error);
-      throw error;
-    } finally {
-      // Cleanup worker instance
-      if (this.worker) {
-        try {
-          await this.worker.cleanup();
-        } catch (cleanupError) {
-          logger.error("Error during worker cleanup:", cleanupError);
-        }
-        this.worker = null;
-      }
-      
-      this.lastActivity = Date.now();
-    }
-  }
-
-  /**
-   * Start timeout monitor to shutdown inactive workers
-   */
-  private startTimeoutMonitor(): void {
-    const checkInterval = 30000; // Check every 30 seconds
-    const timeoutMs = this.timeoutMinutes * 60 * 1000;
-    
-    setInterval(() => {
-      const now = Date.now();
-      const timeSinceLastActivity = now - this.lastActivity;
-      
-      // Allow the worker to exit naturally when not processing
-      // The orchestrator will handle scaling the deployment to 0 after 5 minutes
-      if (timeSinceLastActivity > timeoutMs && 
-          this.queueConsumer.isHealthy() && 
-          this.isInitialized) {
-        logger.info(`Worker finished after ${this.timeoutMinutes} minutes of inactivity`);
-        logger.info('Exiting - deployment will be scaled down by orchestrator after 5-minute grace period');
-        process.exit(0);
-      }
-    }, checkInterval);
-    
-    logger.info(`Started timeout monitor (${this.timeoutMinutes} minutes)`);
   }
 
   /**
@@ -219,12 +137,10 @@ export class QueuePersistentClaudeWorker {
    */
   getStatus(): {
     isInitialized: boolean;
-    lastActivity: Date;
     queueStatus: any;
   } {
     return {
       isInitialized: this.isInitialized,
-      lastActivity: new Date(this.lastActivity),
       queueStatus: this.queueConsumer.getStatus(),
     };
   }

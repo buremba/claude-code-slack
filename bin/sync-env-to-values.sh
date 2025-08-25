@@ -28,14 +28,28 @@ set +a
 # Create a temporary file for the updated values
 TEMP_FILE=$(mktemp)
 
+# Extract password from connection string if needed
+if [[ -n "$POSTGRESQL_CONNECTION_STRING" && -z "$POSTGRESQL_PASSWORD" ]]; then
+    # Extract password from postgres://user:password@host:port/db format
+    POSTGRESQL_PASSWORD=$(echo "$POSTGRESQL_CONNECTION_STRING" | sed -n 's|.*://[^:]*:\([^@]*\)@.*|\1|p')
+fi
+
+# Set default values for undefined variables to avoid awk errors
+SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-}"
+SLACK_SIGNING_SECRET="${SLACK_SIGNING_SECRET:-}"
+SLACK_APP_TOKEN="${SLACK_APP_TOKEN:-}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+POSTGRESQL_PASSWORD="${POSTGRESQL_PASSWORD:-}"
+
 # Read the current values file and replace the secrets section
 awk -v slack_bot_token="$SLACK_BOT_TOKEN" \
     -v slack_signing_secret="$SLACK_SIGNING_SECRET" \
     -v slack_app_token="$SLACK_APP_TOKEN" \
     -v github_token="$GITHUB_TOKEN" \
     -v claude_oauth_token="$CLAUDE_CODE_OAUTH_TOKEN" \
-    -v postgresql_password="$POSTGRESQL_PASSWORD" '
-BEGIN {
+    -v postgresql_password="$POSTGRESQL_PASSWORD" \
+'BEGIN {
     in_secrets = 0
     secrets_updated = 0
 }

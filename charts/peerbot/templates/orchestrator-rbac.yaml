@@ -33,10 +33,6 @@ rules:
   resources: ["persistentvolumeclaims"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-# KEDA ScaledObjects management
-- apiGroups: ["keda.sh"]
-  resources: ["scaledobjects"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
 # Pods monitoring (for deployment health checks)
 - apiGroups: [""]

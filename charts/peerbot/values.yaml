@@ -1,430 +1,206 @@
-# Default values for peerbot Helm chart
-# This is a YAML-formatted file.
+# Default values for Peerbot
+# This is the template configuration for local development
 
-# Global settings
+# Global configuration
 global:
-  imageRegistry: ""
   imagePullSecrets: []
 
-# Dispatcher (Slack event handler) configuration
-dispatcher:
-  replicaCount: 1
-  
-  image:
-    repository: peerbot-dispatcher
-    tag: latest
-    pullPolicy: Always
-  
-  service:
-    type: NodePort
-    port: 3000
-    targetPort: 3000
-  
-  # Resource limits for GKE Autopilot
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-    limits:
-      cpu: 1000m
-      memory: 2Gi
-  
-  # Environment-specific configuration
-  config:
-    logLevel: INFO
-    nodeEnv: production
-  
-  # Health checks
-  livenessProbe:
-    httpGet:
-      path: /health
-      port: 8080
-    initialDelaySeconds: 30
-    periodSeconds: 30
-    timeoutSeconds: 10
-    failureThreshold: 3
-  
-  readinessProbe:
-    httpGet:
-      path: /ready
-      port: 8080
-    initialDelaySeconds: 15
-    periodSeconds: 10
-    timeoutSeconds: 5
-    failureThreshold: 3
+secrets:
+  slackBotToken: "placeholder"
+  slackSigningSecret: "placeholder"
+  slackAppToken: "placeholder"
+  githubToken: "placeholder"
+  claudeCodeOAuthToken: "placeholder"
+  postgresqlPassword: "placeholder"
 
-# Worker (simple-scaled deployment) configuration
-worker:
-  replicas: 1  # Start with 1 replica, scale to 0 after 5 min idle
-  logLevel: info
-  
-  image:
-    repository: claude-worker
-    tag: latest
-    pullPolicy: Always
-  
-  # Optimized resources for worker deployments (reduced by ~50%)
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-    limits:
-      cpu: 1500m
-      memory: 3Gi
-  
-  # Job settings
-  job:
-    timeoutSeconds: 300  # 5 minutes
-    ttlSecondsAfterFinished: 300  # Clean up after 5 minutes
-    backoffLimit: 0  # No retries
-  
-  # Workspace configuration
-  workspace:
-    sizeLimit: 10Gi
-    
-  # Persistent storage configuration
-  persistence:
-    enabled: true
-    size: 10Gi
-    storageClass: ""  # Use default storage class
-
-# Orchestrator (simple deployment management) configuration
-orchestrator:
-  enabled: true
-  replicas: 1
-  
-  image:
-    repository: peerbot-orchestrator
-    tag: latest
-    pullPolicy: Always
-  
-  resources:
-    requests:
-      cpu: 200m
-      memory: 512Mi
-    limits:
-      cpu: 500m
-      memory: 1Gi
-  
-  logLevel: info
-
-# PostgreSQL configuration
-postgresql:
-  database: peerbot
-  username: postgres
-  
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      cpu: 500m
-      memory: 1Gi
-  
-  storage:
-    size: 10Gi
-  storageClass: ""  # Use default storage class
-
-# pgboss queue configuration
-pgboss:
-  retryLimit: 3
-  retryDelay: 30
-  expireInHours: 24
-
-# Queue names
-queues:
-  directMessage: "direct_message"
-  messageQueue: "message_queue"
-
-# Slack configuration
-slack:
-  # Socket mode vs HTTP mode
-  socketMode: true
-  port: 3000
-  
-  # Bot configuration
-  triggerPhrase: "@peerbotai"
-  
-  # Permissions
-  allowDirectMessages: true
-  allowPrivateChannels: false
-  
-  # Rate limiting and features
-  enableStatusReactions: true
-  enableProgressUpdates: true
-
-# GitHub configuration
-github:
-  organization: "peerbot-community"
-
-# Storage: Using in-memory session storage only
-
-# Claude configuration
-claude:
-  # Default Claude options
-  timeoutMinutes: "5"
-  
-# Session management
-session:
-  timeoutMinutes: 5
-
-# Kubernetes configuration
 kubernetes:
-  namespace: default
+  namespace: peerbot
 
-# Service Account and RBAC
-serviceAccount:
-  create: true
-  name: claude-worker
-  annotations:
-    # For GKE Workload Identity
-    iam.gke.io/gcp-service-account: claude-code-bot@your-project.iam.gserviceaccount.com
-
+# RBAC configuration
 rbac:
   create: true
 
-# Secrets management
-secrets:
-  # These should be set via Helm values or external secret management
-  slackBotToken: ""
-  slackSigningSecret: ""
-  githubToken: ""
-  postgresqlPassword: ""
+serviceAccount:
+  create: true
+  annotations: {}
 
-# ConfigMap data
-config:
-  # Non-sensitive configuration
-  gcsBucketName: "peerbot-conversations-prod"
-  gcsProjectId: ""
-  githubOrganization: "peerbot-community"
-  sessionTimeoutMinutes: "5"
+# Pod Security Policy (disabled for local development)
+podSecurityPolicy:
+  enabled: false
 
-# Ingress configuration (optional)
+# Pod Security Standards (disabled for local development)
+podSecurityStandards:
+  enabled: false
+
+# Security Context
+securityContext:
+  enabled: false
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: false
+
+# Horizontal Pod Autoscaler
+autoscaling:
+  enabled: false
+
+# Network Policy
+networkPolicy:
+  enabled: false
+
+# Ingress
 ingress:
   enabled: false
-  className: ""
-  annotations: {}
-  hosts:
-    - host: peerbot.example.com
-      paths:
-        - path: /
-          pathType: Prefix
-  tls: []
 
-# Monitoring and observability
-monitoring:
-  enabled: false
-  serviceMonitor:
-    enabled: false
-  
-# Autoscaling (for dispatcher only)
-autoscaling:
-  enabled: false  # Disabled in favor of KEDA
-  minReplicas: 0  # Scale to zero when idle
-  maxReplicas: 1
-  targetCPUUtilizationPercentage: 50  # Lower threshold for quicker scale-up
-  targetMemoryUtilizationPercentage: 70
-  # Scale down behavior - aggressive for scale-to-zero
-  scaleDown:
-    stabilizationWindowSeconds: 300  # 5 minutes stability before scaling down
-    percent: 100  # Can scale down 100% (to zero)
-    pods: 1  # Scale down 1 pod at a time
-    periodSeconds: 60  # Check every minute
-  # Scale up behavior - quick response
-  scaleUp:
-    stabilizationWindowSeconds: 0  # No delay for scaling up
-    percent: 100  # Can double the pods
-    pods: 2  # Or add 2 pods at once
-    periodSeconds: 15  # Check every 15 seconds
-
-# KEDA autoscaling (alternative to HPA, better for scale-to-zero)
-keda:
-  enabled: true  # Enable KEDA for true scale-to-zero
-  pollingInterval: 30  # Check every 30 seconds
-  cooldownPeriod: 300  # 5 minutes before scaling to zero
-  idleReplicaCount: 0  # Scale to zero when idle
-  minReplicaCount: 0
-  maxReplicaCount: 1
-  triggers:
-    cpu:
-      utilizationPercentage: 50
-    memory:
-      utilizationPercentage: 70
-    # Example Prometheus trigger for custom metrics
-    prometheus:
-      serverAddress: http://prometheus:9090
-      metricName: slack_messages_pending
-      threshold: "1"
-      query: sum(rate(slack_messages_received_total[1m]))
-  
-  # Worker-specific KEDA configuration for PostgreSQL queue scaling
-  worker:
-    enabled: true
-    pollingInterval: 15  # Check queue every 15 seconds (more responsive)
-    cooldownPeriod: 120  # 2 minutes before scaling down (faster than dispatcher)
-    minReplicas: 0  # Scale to zero when no jobs
-    maxReplicas: 20  # Allow up to 20 concurrent workers
-    jobThreshold: 1  # Scale up when 1 or more jobs are pending
-    queryTimeout: 30  # PostgreSQL query timeout in seconds
-    
-    # Scaling behavior
-    scaleDownStabilization: 300  # 5 minutes stability before scale down
-    scaleDownPercent: 25  # Scale down 25% at a time
-    scaleUpStabilization: 60  # 1 minute stability before scale up
-    scaleUpPercent: 100  # Can double workers quickly
-    scaleUpPods: 5  # Or add 5 workers at once
-
-# Pod disruption budget
-podDisruptionBudget:
-  enabled: true
-  dispatcher:
-    minAvailable: 1
-    # maxUnavailable: 1  # Alternative to minAvailable
-  worker:
-    # minAvailable: 1
-    maxUnavailable: "50%"
-
-# Node selector and tolerations
-nodeSelector: {}
-tolerations: []
-affinity: {}
-
-# Spot instance configuration for workers
-workerNodeSelector:
-  cloud.google.com/gke-spot: "true"
-workerTolerations:
-  - key: cloud.google.com/gke-spot
-    operator: Equal
-    value: "true"
-    effect: NoSchedule
-
-# Pod security context
-podSecurityContext:
-  fsGroup: 1001
-  runAsNonRoot: true
-  runAsUser: 1001
-
-# Container security context
-securityContext:
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: false
-  runAsNonRoot: true
-  runAsUser: 1001
-  capabilities:
-    drop:
-      - ALL
-
-# Security Policies
-networkPolicy:
-  enabled: true
-  defaultDeny: false  # Set to true for default deny-all policy
-
-resourceQuota:
-  enabled: true
-  requests:
-    cpu: "1"      # Reduced from 2
-    memory: "2Gi" # Reduced from 4Gi
-    storage: "20Gi" # Reduced from 50Gi
-  limits:
-    cpu: "2"      # Reduced from 4
-    memory: "4Gi" # Reduced from 8Gi
-  counts:
-    pods: 20
-    jobs: 15
-    configmaps: 10
-    secrets: 100
-    services: 5
-    pvcs: 5
-    loadbalancers: 1
-    nodeports: 0
-  storageClass: ""  # Optional: restrict to specific storage class
-
-workerQuota:
-  enabled: true
-  requests:
-    cpu: "0.5"    # Reduced from 1
-    memory: "1Gi" # Reduced from 2Gi
-  limits:
-    cpu: "1.5"    # Reduced from 2
-    memory: "3Gi" # Reduced from 4Gi
-  counts:
-    pods: 10
-    jobs: 8
-
+# Limit Range
 limitRange:
+  enabled: false
+
+
+# PostgreSQL configuration
+postgresql:
   enabled: true
-  container:
-    default:
-      cpu: "500m"
-      memory: "1Gi"
-      storage: "5Gi"
-    defaultRequest:
-      cpu: "100m"
+  database: peerbot
+  username: postgres
+  resources:
+    requests:
       memory: "256Mi"
-      storage: "1Gi"
-    max:
-      cpu: "2"
-      memory: "4Gi"
-      storage: "20Gi"
-    min:
-      cpu: "10m"
-      memory: "32Mi"
-      storage: "100Mi"
-    maxLimitRequestRatio:
-      cpu: 10
-      memory: 4
-  pod:
-    max:
-      cpu: "2"
-      memory: "4Gi"
-      storage: "20Gi"
-    min:
-      cpu: "10m"
-      memory: "32Mi"
-  pvc:
-    max:
-      storage: "100Gi"
-    min:
-      storage: "1Gi"
-  worker:
-    default:
-      cpu: "500m"    # Reduced from 1
-      memory: "1Gi"  # Reduced from 2Gi
-      storage: "5Gi" # Reduced from 10Gi
-    defaultRequest:
-      cpu: "100m"    # Reduced from 200m
-      memory: "256Mi" # Reduced from 512Mi
-      storage: "1Gi"  # Reduced from 2Gi
-    max:
-      cpu: "1.5"     # Reduced from 2
-      memory: "3Gi"  # Reduced from 4Gi
-      storage: "10Gi" # Reduced from 20Gi
-    min:
-      cpu: "50m"
-      memory: "128Mi"
-      storage: "500Mi"
-    maxLimitRequestRatio:
-      cpu: 5
-      memory: 3
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  storage:
+    size: "1Gi"
+    storageClass: ""
 
-podSecurityPolicy:
-  enabled: false  # Deprecated in K8s 1.21+, removed in 1.25+
+slack:
+  triggerPhrase: "@peercloud"
+  socketMode: true
+  allowDirectMessages: true
+  allowPrivateChannels: true
 
-podSecurityStandards:
-  enabled: true  # For K8s 1.23+
-  enforce: "restricted"
-  audit: "restricted"
-  warn: "restricted"
+claude:
+  model: "claude-3-5-sonnet-20241022"
+  timeoutMinutes: "5"
+  allowedTools: ""
 
-# Worker cleanup configuration
-workerCleanup:
-  enabled: true
-  maxAgeMinutes: 60  # Clean up worker deployments older than 1 hour
-  cleanupPVCs: false  # Set to true to also clean up orphaned PVCs
-  kubectlVersion: "latest"
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 1
+# Disable static worker deployment - workers are created dynamically by orchestrator
+worker:
+  enabled: false
+  image:
+    pullPolicy: IfNotPresent
+    tag: latest
+  resources:
+    requests:
+      memory: "1Gi"     # Claude Code requires significant memory
+      cpu: "200m"       # Increased CPU for better performance  
+    limits:
+      memory: "2Gi"     # Allow headroom for Claude operations
+      cpu: "1000m"      # 5:1 ratio (1000m/200m = 5) to meet cluster policy
+  persistence:
+    enabled: true
+    size: "1Gi"
+    storageClass: ""  # Use default storage class
+  job:
+    timeoutSeconds: 300
+    backoffLimit: 0
+    ttlSecondsAfterFinished: 300
+  env:
+    USE_CLAUDE_RESUME: "true"
+    CLAUDE_CODE_ENABLE_UNIFIED_READ_TOOL: "1"
+    ENABLE_BACKGROUND_TASKS: "1"
+    FORCE_AUTO_BACKGROUND_TASKS: "1"
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+    BASH_DEFAULT_TIMEOUT_MS: "60000"
+    BASH_MAX_TIMEOUT_MS: "300000"
+    CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1"
+    DISABLE_AUTOUPDATER: "1"
+    K8S_SKIP_TLS_VERIFY: "true"
 
-# GCS configuration (for network policy)
+# GCS configuration (empty for local)
 gcs:
-  customPorts: []  # Additional ports for GCS if needed
+  enabled: false
+  customPorts: []
+
+# Use LoadBalancer for local Docker Desktop
+service:
+  type: LoadBalancer
+  port: 3000
+
+# Development settings
+dispatcher:
+  enabled: true
+  disableRateLimit: true
+  image:
+    pullPolicy: IfNotPresent
+    tag: latest
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "200m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+  service:
+    type: LoadBalancer
+    port: 3000
+    targetPort: 3000
+  config:
+    nodeEnv: "development"
+    logLevel: "DEBUG"
+
+image:
+  pullPolicy: IfNotPresent
+
+
+# Resource quota configuration - DISABLED for development
+resourceQuota:
+  enabled: false  # Disabled in dev mode to allow unlimited workers
+  requests:
+    cpu: "2"      # Temporarily increased to allow worker testing
+    memory: "4Gi" # Temporarily increased to allow worker testing
+  limits:
+    cpu: "2"      # Allow dispatcher bursts
+    memory: "4Gi" # Allow dispatcher bursts
+
+# Worker-specific quota (uses worker-priority class) - DISABLED for development
+workerQuota:
+  enabled: false  # Disabled in dev mode
+  requests:
+    cpu: "2"      # ~10 concurrent threads (200m each)
+    memory: "8Gi" # ~15 concurrent threads (512Mi each)
+  limits:
+    cpu: "4"      # Allow worker bursts
+    memory: "12Gi" # Allow worker bursts
+  counts:
+    pods: "15"    # Max 15 concurrent worker pods
+    jobs: "10"    # Legacy job limit
+
+autoscaling:
+  enabled: false
+
+# Re-enable orchestrator - needed for dynamic worker creation
+orchestrator:
+  enabled: true
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# Dispatcher configuration moved to line 56
+
+config:
+  githubOrganization: "peerbot-community"
+  gcsBucketName: "peerbot-conversations-dev"
+  gcsProjectId: ""
+  sessionTimeoutMinutes: "5"
+
+# pgboss configuration override
+pgboss:
+  expireInHours: 1  # 1 hour minimum required by pgboss
+
+ingress:
+  enabled: false

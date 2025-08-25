@@ -240,7 +240,7 @@ class PeerbotOrchestrator {
         },
         queues: {
           retryLimit: this.config.queues.retryLimit,
-          expireInHours: this.config.queues.expireInHours
+          expireInSeconds: this.config.queues.expireInSeconds
         }
       }
     };
@@ -272,7 +272,7 @@ async function main() {
         connectionString: process.env.DATABASE_URL!,
         retryLimit: parseInt(process.env.PGBOSS_RETRY_LIMIT || '3'),
         retryDelay: parseInt(process.env.PGBOSS_RETRY_DELAY || '30'),
-        expireInHours: parseInt(process.env.PGBOSS_EXPIRE_HOURS || '22')
+        expireInSeconds: parseInt(process.env.PGBOSS_EXPIRE_SECONDS || '300')
       },
       worker: {
         image: {

@@ -289,25 +289,29 @@ export class SlackEventHandlers {
     const requestStartTime = Date.now();
     logger.info(`[TIMING] handleUserRequest started at: ${new Date(requestStartTime).toISOString()}`);
     
-    // Generate session key
+    // Normalize threadTs BEFORE session key generation to ensure consistency
+    // If this is not already a thread, use the current message timestamp as thread_ts
+    const normalizedThreadTs = context.threadTs || context.messageTs;
+    
+    // Generate session key with normalized threadTs
     const sessionKey = SessionManager.generateSessionKey({
       platform: "slack",
       channelId: context.channelId,
       userId: context.userId,
       userDisplayName: context.userDisplayName,
       teamId: context.teamId,
-      threadTs: context.threadTs,
+      threadTs: normalizedThreadTs,
       messageTs: context.messageTs,
     });
 
-    logger.info(`Handling request for session: ${sessionKey}`);
+    logger.info(`Handling request for session: ${sessionKey} (threadTs: ${normalizedThreadTs})`);
 
     // Check if session is already active
     const existingSession = this.activeSessions.get(sessionKey);
     if (existingSession && existingSession.status === "running") {
       await client.chat.postMessage({
         channel: context.channelId,
-        thread_ts: context.threadTs,
+        thread_ts: normalizedThreadTs,
         text: "⏳ I'm already working on this thread. Please wait for the current task to complete.",
         mrkdwn: true,
       });
@@ -332,8 +336,8 @@ export class SlackEventHandlers {
         this.repositoryCache.set(username, { repository, timestamp: Date.now() });
       }
       
-      // If this is not already a thread, use the current message timestamp as thread_ts
-      const threadTs = context.threadTs || context.messageTs;
+      // Use the normalized threadTs
+      const threadTs = normalizedThreadTs;
       
       // Create thread session
       const threadSession: ThreadSession = {

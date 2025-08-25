@@ -125,7 +125,7 @@ export class QueueProducer {
       priority?: number;
       retryLimit?: number;
       retryDelay?: number;
-      expireInHours?: number;
+      expireInSeconds?: number;
     }
   ): Promise<string> {
     if (!this.isConnected) {
@@ -138,7 +138,7 @@ export class QueueProducer {
         priority: options?.priority || 0,
         retryLimit: options?.retryLimit || 3,
         retryDelay: options?.retryDelay || 30,
-        expireInHours: options?.expireInHours || 1,
+        expireInSeconds: options?.expireInSeconds || 300, // 5 minutes = 300 seconds
         singletonKey: `message-${payload.userId}-${payload.threadId}-${payload.messageId || Date.now()}`, // Prevent duplicates
       });
 
@@ -163,7 +163,7 @@ export class QueueProducer {
       priority?: number;
       retryLimit?: number;
       retryDelay?: number;
-      expireInHours?: number;
+      expireInSeconds?: number;
     }
   ): Promise<string> {
     return this.enqueueMessage(payload, options);
@@ -179,7 +179,7 @@ export class QueueProducer {
       priority?: number;
       retryLimit?: number;
       retryDelay?: number;
-      expireInHours?: number;
+      expireInSeconds?: number;
     }
   ): Promise<string> {
     return this.enqueueMessage(payload, options);

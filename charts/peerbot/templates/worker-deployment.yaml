@@ -8,7 +8,6 @@ metadata:
     {{- include "peerbot.labels" . | nindent 4 }}
     app.kubernetes.io/component: worker
 spec:
-  # KEDA will manage the replica count
   replicas: {{ .Values.worker.replicas | default 1 }}
   selector:
     matchLabels:

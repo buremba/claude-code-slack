@@ -104,8 +104,6 @@ monitoring:
 autoscaling:
   enabled: false
 
-keda:
-  enabled: false
 
 podDisruptionBudget:
   enabled: false
