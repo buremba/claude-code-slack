@@ -90,7 +90,6 @@ secrets:
 
 config:
   githubOrganization: "peerbot-community"
-  gcsBucketName: "peerbot-conversations-dev"
   gcsProjectId: ""
   sessionTimeoutMinutes: "5"
 

@@ -6,7 +6,6 @@ metadata:
     {{- include "peerbot.labels" . | nindent 4 }}
 data:
   # GCS Configuration
-  gcs-bucket-name: {{ .Values.config.gcsBucketName | quote }}
   gcs-project-id: {{ .Values.config.gcsProjectId | quote }}
   
   # GitHub Configuration

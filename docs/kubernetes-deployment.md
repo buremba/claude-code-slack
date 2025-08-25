@@ -144,7 +144,6 @@ secrets:
 
 # Configuration
 config:
-  gcsBucketName: "peerbot-conversations-prod"
   gcsProjectId: "$PROJECT_ID"
   githubOrganization: "peerbot-community"
 
